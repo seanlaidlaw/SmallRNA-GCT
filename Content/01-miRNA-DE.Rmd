@@ -1,0 +1,1330 @@
+# miRNA Differential Expression
+
+## Import Input Data
+
+### Counts Data
+
+
+```{r}
+mirna_matrix_orig = read.table("Data/miRNA_counts/original_data/original_batch_chimira_miRNA.counts", header = TRUE, stringsAsFactors = F)
+colnames(mirna_matrix_orig)[1] = "miRbaseID"
+rownames(mirna_matrix_orig) = mirna_matrix_orig$miRbaseID
+mirna_matrix_orig$miRbaseID = NULL
+
+# Remove column SL288_E which was a very heterogeneous tumour and hard to classify
+mirna_matrix_orig$SL288_E = NULL
+```
+
+
+
+```{r}
+# Convert individual cell Chimira tables to one master table
+i = 0
+for (count_file in list.files("Data/miRNA_counts/new_data/", pattern = "*plain_counts_per_file.counts", full.names = T)) {
+	cell_name = gsub("_trimmed.plain_counts_per_file.counts$","", gsub(".*/","",count_file))
+	x = read.table(file = count_file, header = T, stringsAsFactors = F)
+	colnames(x)[1] = "miRbaseID"
+	colnames(x)[2] = cell_name
+
+	# append each counts file to one another to make a matrix
+	if (i == 0) {
+		mirna_matrix_new = x
+	} else {
+		mirna_matrix_new = merge(mirna_matrix_new, x, by = "miRbaseID", all = TRUE)
+		rownames(mirna_matrix_new) = mirna_matrix_new$Row.names
+		mirna_matrix_new$Row.names = NULL
+	}
+
+
+	i = i+1
+}
+rm(count_file)
+rm(cell_name)
+rm(x)
+rm(i)
+
+# rename columns in matrix to reflect annotation
+colnames(mirna_matrix_new) = gsub("_S[0-9]+_merged_R1_001","",colnames(mirna_matrix_new))
+mirna_matrix_new[is.na(mirna_matrix_new)] <- 0
+
+rownames(mirna_matrix_new) = mirna_matrix_new$miRbaseID
+mirna_matrix_new$miRbaseID = NULL
+```
+
+```{r}
+mirna_counts = merge(mirna_matrix_new, mirna_matrix_orig, by = "row.names", all=T)
+mirna_counts[is.na(mirna_counts)] <- 0
+rownames(mirna_counts) = mirna_counts$Row.names
+mirna_counts$Row.names = NULL
+
+rm(mirna_matrix_orig)
+rm(mirna_matrix_new)
+```
+
+```{r echo=TRUE}
+DT::datatable(head(mirna_counts))
+```
+
+
+
+### Load/Update Annotation
+
+```{r}
+# Load input tables
+annot_orig = read.table("Data/Annotation/original_batch_annotation.tsv", sep = "\t", header = T, stringsAsFactors = F)
+# some columns contain multiple ways of saying same thing, make uniform
+annot_orig$malignantVs.normal[annot_orig$malignantVs.normal == "Non_malignant"] = "Non-malignant"
+annot_orig = annot_orig[annot_orig$annot!= "SL288_E",]
+
+# on 22/04/21 MM informed me that SL286_E is not actually Ovary malignant but testicular malignant
+# this is a fix to correct that
+annot_orig$tissue_type[annot_orig$annot == "SL286_E"] = "Testis"
+
+annot_orig$tissue_type[annot_orig$annot == "SL251_G"] = "Metastasis(LN)"
+annot_orig$tissue_type[annot_orig$annot == "SL252_C"] = "Metastasis(lung)"
+
+
+annot_orig$sampleid = annot_orig$annot
+annot_orig = annot_orig[,c("sampleid","tissue_type","Run_number","Tumour","malignantVs.normal")]
+annot_orig$batch = "original"
+```
+
+```{r}
+annot_new = read.table("Data/Annotation/new_batch_annotation.tsv", sep = "\t", header = T, stringsAsFactors = F)
+rownames(annot_new) = annot_new$Sample.ID
+annot_new$sampleid = annot_new$Sample.ID
+annot_new$Sample.ID = NULL
+annot_new$batch = "new"
+annot_new$malignantVs.normal = "Non-malignant" # all new data is non malignant
+annot_new$Run_number = NA # all new data doesn't have lane information?
+annot_new$sampleid = rownames(annot_new)
+colnames(annot_new) = c("Tumour","tissue_type","sampleid","batch","malignantVs.normal","Run_number")
+annot_new$Tumour[annot_new$Tumour == "Tumour (YST)"] = "YST"
+annot_new$Tumour[annot_new$Tumour == "Tumour (EC)"] = "EC"
+```
+
+```{r}
+annot_table = rbind(annot_orig, annot_new)
+rownames(annot_table) = annot_table$sampleid
+annot_table$sampleid = NULL
+
+rm(annot_orig, annot_new)
+```
+
+
+```{r}
+# Create new annotation based off comments from call on 24 Nov relating to what cell types are the same as what others (and can thus be collapsed into one category) as well as what distinctions should be made to allow more specific plotting. I am going to make a more to less specific set of columns to represent this so that we can chose the level of detail when plotting.
+
+# Generate labels for normal cells (prefix AA for Additional Annotation)
+annot_table$Normal_or_Tumour[rownames(annot_table) %in% c("A1","A2","A3")] = "Normal"
+annot_table$Type[rownames(annot_table) %in% c("A1","A2","A3")] = "Tissue"
+annot_table$Hist_Type[rownames(annot_table) %in% c("A1","A2","A3")] = "Gonadal control"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Ovary_prepub"] = "Normal"
+annot_table$Type[annot_table$Tumour == "Ovary_prepub"] = "Tissue"
+annot_table$Hist_Type[annot_table$Tumour == "Ovary_prepub"] = "Gonadal control"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Testis_postpub"] = "Normal"
+annot_table$Type[annot_table$Tumour == "Testis_postpub"] = "Tissue"
+annot_table$Hist_Type[annot_table$Tumour == "Testis_postpub"] = "Gonadal control"
+
+annot_table$Normal_or_Tumour[rownames(annot_table) %in% c("B1","B2","B3")] = "Normal"
+annot_table$Type[rownames(annot_table) %in% c("B1","B2","B3")] = "Tissue"
+annot_table$Hist_Type[rownames(annot_table) %in% c("B1","B2","B3")] = "Gonadal control"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Non-tumour (testis fibroblasts)"] = "Normal"
+annot_table$Type[annot_table$Tumour == "Non-tumour (testis fibroblasts)"] = "Cell line"
+annot_table$Hist_Type[annot_table$Tumour == "Non-tumour (testis fibroblasts)"] = "Testis fibroblasts"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "EC"] = "Tumour"
+annot_table$Hist_Type[annot_table$Tumour == "EC"] = "Embryonal carcinoma"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "YST"] = "Tumour"
+annot_table$Hist_Type[annot_table$Tumour == "YST"] = "Yolk sac tumour"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Teratoma"] = "Tumour"
+annot_table$Hist_Type[annot_table$Tumour == "Teratoma"] = "Teratoma"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Germinoma"] = "Tumour"
+annot_table$Hist_Type[annot_table$Tumour == "Germinoma"] = "Seminoma/Germinoma"
+
+annot_table$Normal_or_Tumour[annot_table$Tumour == "Tumour (Sem)"] = "Tumour"
+annot_table$Hist_Type[annot_table$Tumour == "Tumour (Sem)"] = "Seminoma/Germinoma"
+
+# convert some character columns to factors to avoid warning messages in some analyses
+annot_table$Hist_Type = factor(annot_table$Hist_Type, levels = c("Seminoma/Germinoma",
+"Yolk sac tumour",
+"Embryonal carcinoma",
+"Gonadal control",
+"Testis fibroblasts",
+"Teratoma")
+)
+annot_table$Tumour = as.factor(annot_table$Tumour)
+annot_table$batch = as.factor(annot_table$batch)
+annot_table$tissue_type = as.factor(annot_table$tissue_type)
+```
+
+
+```{r}
+# Raheleh says everything in old batch is a sample, and that except A1-B3 inclusive, everything in new data is cell line
+annot_table$Type[annot_table$batch == "original"] = "Tissue"
+# the new data's A1-B3 have already been labelled as Sample above, so here just label everything else as cell line
+annot_table$Type[annot_table$batch == "new" & is.na(annot_table$Type)] = "Cell line"
+```
+
+
+```{r}
+# import annotation of EVs from 1:1
+annot_ev = read.table("Data/Annotation/cell_line_EV_annotation.tsv", sep = "\t", header = T, row.names = 1)
+annot_ev = annot_ev[,c("Hist_Type","EVs")]
+annot_ev$Hist_Type = NULL
+annot_table = merge(annot_table, annot_ev, by = "row.names")
+rm(annot_ev)
+```
+
+
+```{r}
+# fix confusing EV/non-EV category by having a 'Type' listing if its tissue, cell-line, or EV
+annot_table$Type[annot_table$Type == "Cell line" & annot_table$EVs == "non-EV"] = "Cell line"
+annot_table$Type[annot_table$Type == "Cell line" & annot_table$EVs == "EV"] = "Extracellular vesicle"
+```
+
+```{r}
+# Label all tumours except Teratoma as malignant (as suggested in meeting of 23/12)
+annot_table$malignantVs.normal[(annot_table$batch == "new" & annot_table$Normal_or_Tumour == "Tumour" & annot_table$Hist_Type != "Teratoma")] = "Malignant"
+```
+
+```{r}
+# add test-lane / final-lane correspondance using the Barcode ("A","B","C",etc.) that is part of the rowname
+# this barcode is unique within each Tumour type so make a Tumour_Barcode column with both those information
+correspondance_annot <- annot_table %>%
+  filter(batch == "original") %>%
+  mutate(Barcode = gsub(".*_", "", Row.names)) %>%
+  mutate(Tumour_Barcode = paste(Tumour, Barcode, sep = "_")) %>%
+  arrange(Tumour_Barcode)
+
+# add this tumour_barcode column to main annot_table
+annot_table = merge(annot_table, correspondance_annot[,c("Row.names", "Tumour_Barcode")], by = "Row.names", all.x = T)
+rm(correspondance_annot)
+```
+
+```{r}
+# we wanted the categories for showing read grouping by small-RNA family done differently from Hist_Type labelling used elsewhere, so setup that annotation to be used in plots
+annot_table$SampleCategoryGrouped = NA
+annot_table$SampleCategoryGrouped[annot_table$tissue_type == "Ovary" & annot_table$Hist_Type == "Gonadal control"] = "Ovary control samples"
+annot_table$SampleCategoryGrouped[annot_table$tissue_type == "Testis" & annot_table$Hist_Type == "Gonadal control"] = "Testis control samples"
+
+annot_table$SampleCategoryGrouped[annot_table$Type == "Tissue" & annot_table$Normal_or_Tumour == "Tumour" & annot_table$tissue_type %in% c("Ovary", "Metastasis(LN)")] = "Malignant GCTs (ovarian origin)"
+annot_table$SampleCategoryGrouped[annot_table$Type == "Tissue" & annot_table$Normal_or_Tumour == "Tumour" & annot_table$tissue_type %in% c("Testis", "Metastasis(lung)")] = "Malignant GCTs (testicular origin)"
+
+annot_table$SampleCategoryGrouped[annot_table$Type == "Cell line" & annot_table$Normal_or_Tumour == "Tumour"] = "Malignant GCT cell lines"
+annot_table$SampleCategoryGrouped[annot_table$Type == "Extracellular vesicle" & annot_table$Normal_or_Tumour == "Tumour"] = "Malignant GCT EVs"
+
+annot_table$SampleCategoryGrouped[annot_table$Type == "Cell line" & annot_table$Hist_Type == "Testis fibroblasts"] = "Testis fibroblast"
+
+annot_table$SampleCategoryGrouped[annot_table$Type == "Extracellular vesicle" & annot_table$Hist_Type == "Testis fibroblasts"] = "Testis fibroblast EVs"
+
+annot_table$SampleCategoryGrouped[annot_table$Hist_Type == "Teratoma"] = "Teratoma"
+
+# remove labels from test-lane as they will inflate the count of samples per category
+annot_table$SampleCategoryGrouped[annot_table$batch == "original" & annot_table$Run_number == "test-lane"] = NA
+
+
+# add number of samples in each category to additional annotation
+table_additional_categories = annot_table %>%
+  select(Row.names, SampleCategoryGrouped) %>%
+  distinct() %>%
+  select(SampleCategoryGrouped) %>%
+  table() %>%
+  as.data.frame()
+
+
+colnames(table_additional_categories) = c("SampleCategoryGrouped", "Freq")
+table_additional_categories$SampleCategoryGrouped_numbered = paste0(table_additional_categories$SampleCategoryGrouped, " (n=", table_additional_categories$Freq, ")")
+table_additional_categories$Freq = NULL
+
+for (category in unique(annot_table$SampleCategoryGrouped)) {
+  if (!is.na(category)) {
+
+    rows_with_category = annot_table$Row.names[annot_table$SampleCategoryGrouped == category]
+    rows_with_category = na.omit(rows_with_category)
+    rows_with_category = as.vector(rows_with_category)
+
+    annot_table$SampleCategoryGrouped_numbered[annot_table$Row.names %in% rows_with_category] = table_additional_categories$SampleCategoryGrouped_numbered[table_additional_categories$SampleCategoryGrouped == category]
+  }
+}
+
+annot_table$SampleCategoryGrouped = NULL
+annot_table$SampleCategoryGrouped = annot_table$SampleCategoryGrouped_numbered
+annot_table$SampleCategoryGrouped_numbered = NULL
+```
+
+```{r}
+annot_table$Type = factor(annot_table$Type, levels = c("Tissue", "Cell line", "Extracellular vesicle"))
+```
+
+
+```{r}
+# add sample numbers as reflected in Table 1
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL287_A"] = 1
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL286_C"] = 2
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL286_D"] = 3
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL286_E"] = 4
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL288_F"] = 5
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL287_G"] = 6
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL287_H"] = 7
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL288_A"] = 8
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL289_C"] = 9
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL289_D"] = 10
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL289_F"] = 11
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL290_G"] = 12
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "SL291_H"] = 13
+
+
+# and for new batch which is ordered numerically from A1-J4
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "A1"] = 14
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "A2"] = 15
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "A3"] = 16
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "B1"] = 17
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "B2"] = 18
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "B3"] = 19
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "C1"] = 20
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "C2"] = 21
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "C3"] = 22
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "D1"] = 23
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "D2"] = 24
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "D3"] = 25
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "E1"] = 26
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "E2"] = 27
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "E3"] = 28
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "F1"] = 29
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "F2"] = 30
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "F3"] = 31
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "G1"] = 32
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "G2"] = 33
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "G3"] = 34
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "G4"] = 35
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "H1"] = 36
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "H2"] = 37
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "H3"] = 38
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "H4"] = 39
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "I1"] = 40
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "I2"] = 41
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "I3"] = 42
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "I4"] = 43
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "J1"] = 44
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "J2"] = 45
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "J3"] = 46
+annot_table$Sample_Number_Table_1[annot_table$Row.names == "J4"] = 47
+```
+
+
+
+```{r}
+# Remove the sample SL252_E from the dataset as it had QC problems that makes it unsuitable for analysis
+mirna_counts$SL252_E = NULL
+annot_table = annot_table[!is.na(annot_table$tissue_type),]
+```
+
+
+```{r echo=TRUE}
+DT::datatable(head(mirna_counts))
+```
+
+
+## PCA Clustering
+
+
+```{r}
+# get cell names that are not "test-lane", this way we can exclude test-lane from comparisons below
+only_new_annot <- annot_table[annot_table$batch == "new", ]
+only_final_annot <- annot_table[(annot_table$batch == "original" & annot_table$Run_number == "final-lane"), ]
+testless_annot <- rbind(only_new_annot, only_final_annot)
+testless_cells <- annot_table$Row.names[annot_table$Row.names %in% testless_annot$Row.names]
+
+mirna_counts_testless = mirna_counts[,testless_cells]
+rm(only_new_annot)
+rm(only_final_annot)
+```
+
+
+### Clustering of All Samples {.panelset}
+
+We see very clear clustering in the miRNA PCA between samples from normal
+tissue/cell-lines and those from tumour. Although there are two tumour
+labelled samples next to the left cluster which represents the normal group,
+these are actually from Teratoma, a benign tumour whose profiles more closely
+match those of normal group than of the tumour group.
+
+Additionally we see by looking at the PCA coloured by Histological Type, that
+there is a clear separation between most of the groups, with the different
+types mostly clustering separately.
+
+Finally, we verify that we are not seeing clustering based solely on if the
+data is tissue-derived or Cell-Line-derived with the third PCA.
+
+
+#### Test/Final lane Comparison {-}
+
+```{r cache=TRUE}
+# load data as DeSeq
+original_annot = annot_table[annot_table$batch == "original",]
+original_mirna = mirna_counts[,colnames(mirna_counts) %in% annot_table$Row.names[annot_table$batch == "original"]]
+original_mirna = original_mirna[,original_annot$Row.names]
+
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = original_mirna,
+										  colData = original_annot,
+										  design = ~ Run_number))
+
+vsd <- vst(deseq_matrix_raw, nsub=50)
+
+# Plot PCA
+set.seed(136)
+pca_values = plotPCA(vsd, intgroup=c("Hist_Type", "Run_number", "Tumour_Barcode"), returnData=T)
+pca_values$Run_number = as.character(pca_values$Run_number)
+pca_values$Run_number[pca_values$Run_number == "test-lane"] = "T"
+pca_values$Run_number[pca_values$Run_number == "final-lane"] = "F"
+pca_values$Run_number = factor(pca_values$Run_number)
+
+
+plt = ggplot(data = pca_values, aes_string(x = "PC1", y = "PC2", fill = "Hist_Type", label = "Run_number")) +
+  geom_point(size = 3, shape = 21) +
+  histological_subtype_palette_fill_sans_TF +
+  xlab(paste0("PC1: ", round(attr(pca_values, "percentVar")[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(attr(pca_values, "percentVar")[2] * 100), "% variance")) +
+  coord_fixed() +
+  geom_line(aes(group=Tumour_Barcode)) +
+  geom_text_repel(point.padding = 1) +
+  ggtitle("PCA of set-1 miRNA expression coloured by histological subtype, labelled by lane (T/F)") +
+  labs(fill="Key")
+
+# save PCA
+ggsave(filename = "Plots/miRNA Clustering/PCA_lane_separation.pdf", device = "pdf", width = 10, height = 7, units = "in")
+rm(original_annot)
+rm(original_mirna)
+master_plot_list$figS1 = plt
+plt
+```
+
+
+
+#### Batch Comparison {-}
+
+```{r cache=TRUE}
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+vsd <- vst(deseq_matrix_raw, nsub=500)
+
+# Remove batch effect
+mirna_norm_counts <- assay(vsd)
+mirna_norm_counts <- limma::removeBatchEffect(mirna_norm_counts, vsd$batch)
+assay(vsd) <- mirna_norm_counts
+
+vsd$batch = as.character(vsd$batch)
+vsd$batch[vsd$batch == "original"] = "Set-1"
+vsd$batch[vsd$batch == "new"] = "Set-2"
+
+# Plot PCA
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("batch")) + ggtitle("PCA of miRNA counts (both sets (sans test-lane) ) coloured by batch") + labs(color = "Set")
+ggsave(filename = "Plots/miRNA Clustering/PCA_batch_separation.pdf", device = "pdf", width = 8, height = 5)
+master_plot_list$figS2 = plt
+plt
+```
+
+
+#### Normal/Tumour {-}
+
+```{r cache=TRUE}
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+vsd <- vst(deseq_matrix_raw, nsub=500)
+
+# Remove batch effect
+mirna_norm_counts <- assay(vsd)
+mirna_norm_counts <- limma::removeBatchEffect(mirna_norm_counts, vsd$batch)
+assay(vsd) <- mirna_norm_counts
+
+# Plot PCA
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("Normal_or_Tumour")) + ggtitle("PCA 1. (sans test-lane)  Normal or Tumor")
+ggsave(filename = "Plots/miRNA Clustering/PCA_1.pdf", device = "pdf", width = 8, height = 5)
+plt
+```
+
+
+
+#### Hist. Type {-}
+
+```{r cache=TRUE}
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+vsd <- vst(deseq_matrix_raw, nsub=500)
+
+# Remove batch effect
+mat <- assay(vsd)
+mat <- limma::removeBatchEffect(mat, vsd$batch)
+assay(vsd) <- mat
+rm(mat)
+
+
+# Plot PCA
+set.seed(136)
+pca_values = plotPCA(vsd, intgroup=c("Hist_Type","Type"), returnData=T)
+
+plt = ggplot(data = pca_values, aes_string(x = "PC1", y = "PC2", colour = "Hist_Type", shape = "Type")) +
+  geom_point(size = 4) +
+  histological_subtype_palette +
+  xlab(paste0("PC1: ", round(attr(pca_values, "percentVar")[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(attr(pca_values, "percentVar")[2] * 100), "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA of both sets' (sans test-lane) miRNA expression coloured by histological subtype")
+
+master_plot_list$fig2$A = plt
+
+# save PCA
+ggsave(filename = "Plots/miRNA Clustering/PCA_2.pdf",device = "pdf",width = 10, height = 7)
+plt
+```
+
+```{r fig.height=3.86, fig.width=6.22, include=FALSE}
+# for poster presentation
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("Hist_Type"))
+plt + histological_subtype_palette_fill + ggtitle("PCA 2. Hist. Type (all samples) (sans test-lane)")
+
+ggsave(plot = plt, filename = "Plots/miRNA Clustering/miRNA_PCA.svg", device = "svg",width = 6.22, height = 3.86)
+rm(plt)
+```
+
+
+
+#### CL/Tissue {-}
+
+```{r cache=TRUE}
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+vsd <- vst(deseq_matrix_raw, nsub=500)
+
+# Remove batch effect
+mat <- assay(vsd)
+mat <- limma::removeBatchEffect(mat, vsd$batch)
+assay(vsd) <- mat
+rm(mat)
+
+# Plot PCA
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("Type")) + ggtitle("PCA 3. Cell lines v Primary Tissue (all samples) (sans test-lane)")
+ggsave(filename = "Plots/miRNA Clustering/PCA_3.pdf",device = "pdf",width = 8, height = 5)
+plt
+```
+
+
+
+
+### Clustering of Select Samples {.panelset}
+
+Here we looked at the PCA of the miRNA dataset with certain samples removed to
+check that we see the clustering by Histological Type regardless of if origin
+is from the new or the original batch.
+
+We see that it clusters by histological type regardless.
+
+
+#### Hist. Type w/o TF {-}
+
+```{r cache=TRUE}
+# Second PCA based on Hist. Types testes,ovaries, EC, YST, seminoma/geminoma, teratoma, but remove fibroblasts before
+fibroblastless_cells = testless_annot$Row.names[testless_annot$Hist_Type != "Testis fibroblasts"]
+
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+deseq_matrix_raw = deseq_matrix_raw[,fibroblastless_cells]
+rm(fibroblastless_cells)
+
+vsd <- vst(deseq_matrix_raw, nsub=400)
+
+# Remove batch effect
+mat <- assay(vsd)
+mat <- limma::removeBatchEffect(mat, vsd$batch)
+assay(vsd) <- mat
+rm(mat)
+
+# Plot PCA
+set.seed(136)
+pca_values = plotPCA(vsd, intgroup=c("Hist_Type","Type"), returnData=T)
+
+plt = ggplot(data = pca_values, aes_string(x = "PC1", y = "PC2", color = "Hist_Type", shape = "Type")) +
+  geom_point(size = 4) +
+  histological_subtype_palette_sans_TF +
+  xlab(paste0("PC1: ", round(attr(pca_values, "percentVar")[1] * 100), "% variance")) +
+  ylab(paste0("PC2: ", round(attr(pca_values, "percentVar")[2] * 100), "% variance")) +
+  coord_fixed() + ggtitle("PCA 4. Both sets' (sans fibroblasts) (sans test-lane) miRNA expression colored by Hist. Type")
+
+
+# save PCA
+ggsave(plot = plt, filename = "Plots/miRNA Clustering/PCA_4.pdf",device = "pdf",width = 10, height = 7)
+master_plot_list$figS7 = plt
+plt
+```
+
+#### Hist. Type w/o New {-}
+
+```{r cache=TRUE}
+# Then another PCA of just *original* data pca based on Hist. Types testes,ovaries, EC, YST, fibroblasts
+old_cells = testless_annot$Row.names[testless_annot$batch == "original"]
+
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+deseq_matrix_raw = deseq_matrix_raw[,old_cells]
+rm(old_cells)
+
+# subset_mirna_annot = annot_table[rownames(annot_table) %in% colnames(deseq_matrix_raw),]
+
+vsd <- vst(deseq_matrix_raw, nsub=70)
+
+# Plot PCA
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("Hist_Type")) + ggtitle("PCA 5.1. Hist. Type (only original data (sans test-lane) )")
+plt = plt + histological_subtype_palette
+ggsave(plot = plt, filename = "Plots/miRNA Clustering/PCA_5.1.pdf",device = "pdf",width = 8, height = 5)
+master_plot_list$figS6$A = plt + coord_fixed()
+plt
+```
+
+
+
+#### Hist. Type w/o Original {-}
+
+```{r cache=TRUE}
+# Then another PCA of just *new* data pca based on Hist. Types testes,ovaries, EC, YST, fibroblasts
+new_cells = testless_annot$Row.names[testless_annot$batch == "new"]
+
+# load data as DeSeq
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = mirna_counts_testless,
+										  colData = testless_annot,
+										  design = ~ Hist_Type + batch))
+
+deseq_matrix_raw = deseq_matrix_raw[,new_cells]
+rm(new_cells)
+
+# subset_mirna_annot = annot_table[rownames(annot_table) %in% colnames(deseq_matrix_raw),]
+
+vsd <- vst(deseq_matrix_raw, nsub=300)
+
+# Plot PCA
+set.seed(136)
+plt = plotPCA(vsd, intgroup=c("Hist_Type")) +ggtitle("PCA 5.2. Hist. Type (only new data (sans test-lane) )")
+plt = plt + histological_subtype_palette
+ggsave(filename = "Plots/miRNA Clustering/PCA_5.2.pdf",device = "pdf",width = 8, height = 5)
+master_plot_list$figS6$B = plt + coord_fixed()
+plt
+```
+
+
+
+## Malignant / Normal Differential Expression
+
+Here we conduct multiple differential expression tests all relating to comparing
+miRNA expression between samples labelled as Malignant and those labelled normal.
+With each additional comparison we add more samples to each side of the comparison,
+thus increasing the statistical power and showing ever greater resolution of
+differentially expressed miRNAs.
+
+First up, we test only the data originating from the original batch of sequencing.
+From this batch there is a test-lane and a final-lane. The test-lane has less samples
+but proves a good starting point. We then ran the same comparison on the final-lane
+samples.
+
+Then we compare the malignant cell-lines against the normal tissue samples.
+
+```{r}
+mirna_i = 0
+```
+
+
+
+### Test Lane {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Malignant test-lane"
+Aint = 35:44
+
+grpB_label = "Non-Malignant test-lane"
+Bint = 46:47
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### Final Lane {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Malignant final lane"
+Aint = 48:57
+
+grpB_label = "Non-Malignant final lane"
+Bint = 59:60
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### Cell Lines + Samples {.panelset}
+
+3. 3 malignant GCT cell lines (triplicate) ie. All the non-EV cell lines (except Hs.1.Tes) and their EVs (quadruplicate) versus 6 gonadal tissue samples (three ovary and three testicular) (and Hs.1.Tes and Hs.1.Tes EVs)
+
+```{r cache=TRUE}
+grpA_label = "3 malignant GCT Cell lines with their EV"
+Aint = c(10:18,23:34)
+
+grpB_label = "Gonodal Controls + Hs.1.Tes and Hs.1.Tes EVs"
+Bint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Gonadal control" & annot_table$batch == "new"),]))
+Bint = c(Bint,7:9,19:22) # add Hs.1.Tes to control side
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+
+### Samples Only {.panelset}
+
+4. 10 malignant GCT tissue samples (‘old’) versus 8 gonadal tissue samples (two ‘old’ and six ‘new’)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT (final-lane)"
+Aint = c(48:57)
+
+grpB_label = "Gonodal Controls (from new or final-lane)"
+Bint = c(1:6,59:60)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### Samples + Teratoma {.panelset}
+
+5. 10 malignant GCT tissue samples (‘old’) versus 9 non-malignant tissue samples (eight gonadal samples above plus teratoma tissue sample)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT (final-lane)"
+Aint = c(48:57)
+
+grpB_label = "Gonodal Controls and teratoma"
+Bint = c(1:6,59:60,58)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### Cell Lines + Samples {.panelset}
+
+6. 13 malignant GCT samples (10 tissue and 3 cell line) versus 8 gonadal tissue samples (two ‘old’ and six ‘new’)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-EV tumor cell-lines"
+Aint = c(48:57,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls (from new or final-lane)"
+Bint = c(1:6,59:60)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+```{r fig.width=7.22, fig.height=4.86}
+# for poster presentation
+unserialize(deseq_out$volcano)
+ggsave(filename = "Plots/miRNA DEA/miRNA_DE_volcano.svg", device = "svg",width = 7.22, height = 4.86)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### Cell Lines + Samples + Teratoma {.panelset}
+
+7. 13 malignant GCT samples (10 tissue and 3 cell line) versus 9 non-malignant tissue samples (eight gonadal samples above plus teratoma tissue sample)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-EV tumor cell-lines"
+Aint = c(48:57,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls and Teratoma"
+Bint = c(1:6,59:60,58)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### Cell Lines + Samples TF  {.panelset}
+
+8. 13 malignant GCT samples (10 tissue and 3 cell line) versus 8 gonadal tissue samples (two ‘old’ and six ‘new’) and 1 fibroblast cell line (Hs.1.Tes)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-EV tumor cell-lines"
+Aint = c(48:57,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls and Hs.1.Tes non-EV"
+Bint = c(1:6,59:60,7,8,9)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### Cell Lines + Samples + teratoma + TF {.panelset}
+
+9. 13 malignant GCT samples (10 tissue and 3 cell line) versus 9 non-malignant tissue samples (eight gonadal samples above plus teratoma tissue sample) and 1 fibroblast cell line (Hs.1.Tes)
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-EV tumor cell-lines"
+Aint = c(48:57,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls and teratoma and Hs.1.Tes non-EV"
+Bint = c(1:6,59:60,7,8,9,58)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### Cell Lines + Samples + TF + EV {.panelset}
+
+10. 13 malignant GCT samples (10 tissue and 3 cell line) plus all non-control cell line EVs (n=3) versus 8 gonadal tissue samples (two ‘old’ and six ‘new’) and 1 fibroblast cell line (Hs.1.Tes) + their EV
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-control cell-lines and their EVs"
+Aint = c(48:57,23:34,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls and Hs.1.Tes and all Hs.1.Tes EVs"
+Bint = c(1:6,59:60,7,8,9,19:22)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### Cell Lines + Samples + teratoma + TF + EV {.panelset}
+
+11. 13 malignant GCT samples (10 tissue and 3 cell line) plus all non-control cell line EVs (n=3) versus 9 non-malignant tissue samples (eight gonadal samples above plus teratoma tissue sample) and 1 fibroblast cell line (Hs.1.Tes) plus its EV
+
+```{r cache=TRUE}
+grpA_label = "10 malignant GCT samples + 3 non-EV tumor cell-lines"
+Aint = c(48:57,23:34,as.integer(rownames(annot_table[(annot_table$Type == "Cell line" & annot_table$EVs == "non-EV" & annot_table$Normal_or_Tumour == "Tumour"),])))
+
+grpB_label = "Gonodal Controls and Hs.1.Tes and teratoma and all cell-line EVs"
+Bint = c(1:6,59:60,7,8,9,58,19:22)
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+master_plot_list$figS8 = unserialize(deseq_out$volcano)
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+## Peer Review DE
+
+We are confirming here the miRNA profiles specific to GCT subtype as reported previously. These are to respond to the peer review comment on miRNA specific to each subtype.
+
+### Seminoma
+
+```{r cache=TRUE}
+grpA_label = "all seminoma samples (tissue, CL, EV)"
+Aint = testless_annot %>% filter(Hist_Type == "Seminoma/Germinoma") %>% pull(Row.names)
+Aint = as.integer(rownames(annot_table[annot_table$Row.names %in% Aint,]))
+
+grpB_label = "16 non-malignant"
+Bint = testless_annot$Row.names[testless_annot$malignantVs.normal == "Non-malignant"]
+Bint = as.integer(rownames(annot_table[annot_table$Row.names %in% Bint,]))
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### YST
+
+```{r cache=TRUE}
+grpA_label = "all YST samples (tissue, CL, EV)"
+Aint = testless_annot %>% filter(Hist_Type == "Yolk sac tumour") %>% pull(Row.names)
+Aint = as.integer(rownames(annot_table[annot_table$Row.names %in% Aint,]))
+
+grpB_label = "16 non-malignant"
+Bint = testless_annot$Row.names[testless_annot$malignantVs.normal == "Non-malignant"]
+Bint = as.integer(rownames(annot_table[annot_table$Row.names %in% Bint,]))
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+### EC
+
+```{r cache=TRUE}
+grpA_label = "all EC samples (tissue, CL, EV)"
+Aint = testless_annot %>% filter(Hist_Type == "Embryonal carcinoma") %>% pull(Row.names)
+Aint = as.integer(rownames(annot_table[annot_table$Row.names %in% Aint,]))
+
+grpB_label = "16 non-malignant"
+Bint = testless_annot$Row.names[testless_annot$malignantVs.normal == "Non-malignant"]
+Bint = as.integer(rownames(annot_table[annot_table$Row.names %in% Bint,]))
+
+deseq_out = deseq2_plot("miRNA", grpA_label, Aint, grpB_label, Bint, mirna_i, annot_table, mirna_counts, subfolder = "miRNA DEA")
+mirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+#datatable(read_excel(path = deseq_out$excel))
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+```{r}
+# cleanup objects in memory from miRNA DeSeq
+rm(list = c("decomp_counter", "filename", "grpB_label", "grpA_label", "instruction", "vsd", "plt"))
+gc()
+```
+
+
+
+## Heatmap of top DE miRNA
+
+```{r cache=TRUE, include=FALSE}
+# make copies of counts and annotation matrix with the sample number as the id
+heatmap_mirna_counts = mirna_counts[,testless_annot$Row.names]
+colnames(heatmap_mirna_counts) = testless_annot$Sample_Number_Table_1[testless_annot$Row.names %in% colnames(heatmap_mirna_counts)]
+
+heatmap_annot = testless_annot
+rownames(heatmap_annot) = heatmap_annot$Sample_Number_Table_1
+heatmap_annot = heatmap_annot[colnames(heatmap_mirna_counts),]
+
+heatmap_mirna_counts = heatmap_mirna_counts[,rownames(heatmap_annot)]
+
+# generate the counts matrix from which to plot expression values
+deseq_matrix_raw = DESeqDataSetFromMatrix(countData = heatmap_mirna_counts,
+										  colData = heatmap_annot,
+										  design = ~ Hist_Type)
+
+deseq_matrix <- DESeq(deseq_matrix_raw)
+
+deseq_matrix = vst(deseq_matrix, blind = F, nsub = 500)
+
+vsd <- vst(deseq_matrix_raw, nsub=500)
+
+# Remove batch effect
+mat <- assay(vsd)
+mat <- limma::removeBatchEffect(mat, vsd$batch)
+assay(vsd) <- mat
+rm(mat)
+```
+
+```{r, include=FALSE}
+heatmap_annot = heatmap_annot[,c("Hist_Type","tissue_type")]
+colnames(heatmap_annot)[2] = "tissue_type"
+
+Hist_Type_values=c("Yolk sac tumour" = "#FEC539",
+		  		 "Seminoma/Germinoma" = "#008FFF",
+		  		 "Embryonal carcinoma" = "red",
+		  		 "Teratoma" = "brown",
+		  		 "Gonadal control" = "#00A34E",
+		  		 "Testis fibroblasts" = "grey"
+		  		 )
+heatmapcolors <- list(Hist_Type = Hist_Type_values)
+rm(Hist_Type_values)
+```
+
+
+
+
+
+
+### Top 20 DE
+
+```{r cache=TRUE, include=FALSE}
+top_20_malig_gonod = read.table("Plots/miRNA DEA/11. DE results table (unfiltered) Gonodal Controls and Hs.1.Tes and teratoma and all cell-line EVs v 10 malignant GCT samples + 3 non-EV tumor cell-lines.tsv", header = T, sep = "\t")
+top_20_malig_gonod = top_20_malig_gonod[top_20_malig_gonod$padj < 0.05,]
+top_20_malig_gonod = top_20_malig_gonod[!is.na(top_20_malig_gonod$padj),]
+top_20_malig_gonod$absLFC = abs(top_20_malig_gonod$log2FoldChange)
+top_20_malig_gonod = top_20_malig_gonod[order(top_20_malig_gonod$absLFC, decreasing = T),]
+top_20_malig_gonod = rownames(top_20_malig_gonod)[1:20]
+```
+
+Stats for manuscript:
+```{r}
+Healthy_specific_DE = read.table("Plots/miRNA DEA/11. DE results table (unfiltered) Gonodal Controls and Hs.1.Tes and teratoma and all cell-line EVs v 10 malignant GCT samples + 3 non-EV tumor cell-lines.tsv", header = T, sep = "\t")
+Healthy_specific_DE_filtered = Healthy_specific_DE[!is.na(Healthy_specific_DE$padj),]
+Healthy_specific_DE_filtered = Healthy_specific_DE_filtered[Healthy_specific_DE_filtered$padj < 0.05,]
+Healthy_specific_DE_filtered = Healthy_specific_DE_filtered[abs(Healthy_specific_DE_filtered$log2FoldChange) > 1,]
+```
+
+We have `r nrow(Healthy_specific_DE_filtered)` differentially expressed miRNAs between the Healthy and the Malignant samples. Of these `r table(Healthy_specific_DE_filtered$log2FoldChange > 0)[1]` are upregulated in malignant samples and  `r table(Healthy_specific_DE_filtered$log2FoldChange > 0)[2]` are downregulated when compared to healthy.
+
+
+```{r}
+# default heatmap very hard to read colors so replace with glorious wes anderson colorschemes
+cmplxhmapcols = heatmapcolors # previous heatmap already had Hist_Type so import that
+cmplxhmapcols$batch = c("new" =  wes_palette("Cavalcanti1")[1], "original" =  wes_palette("Cavalcanti1")[4])
+cmplxhmapcols$EVs = c("EV" =  wes_palette("GrandBudapest2")[1], "non-EV" =  wes_palette("GrandBudapest2")[4])
+cmplxhmapcols$Normal_or_Tumour = c("Normal" =  wes_palette("IsleofDogs2")[2], "Tumour" =  wes_palette("IsleofDogs2")[4])
+cmplxhmapcols$tissue_type =  colorRampPalette(wes_palette("FantasticFox1"))(length(unique(annot_table$tissue_type)))
+names(cmplxhmapcols$tissue_type) = unique(annot_table$tissue_type)
+
+cmplxhmapcols$Type = c("Tissue" =  wes_palette("GrandBudapest1")[1], "Cell line" =  wes_palette("GrandBudapest1")[3], "Extracellular vesicle" = wes_palette("GrandBudapest1")[2])
+# same as Type but because we rename this for plot aesthetics
+cmplxhmapcols$`Sample Type` = cmplxhmapcols$Type
+
+# same as Hist_Type but because we rename this for plot aesthetics
+cmplxhmapcols$Key = cmplxhmapcols$Hist_Type
+
+# add annotation for additional Categories also (named here Sample_Group)
+cmplxhmapcols$SampleCategoryGrouped = as.vector(RColorBrewer::brewer.pal(9, "Set3"))
+names(cmplxhmapcols$SampleCategoryGrouped) = na.omit(unique(annot_table$SampleCategoryGrouped))
+cmplxhmapcols$Sample_Group = cmplxhmapcols$SampleCategoryGrouped # allow accessing through a better named variable
+```
+
+
+```{r fig.width=7.5, fig.height=4}
+heatmap_top_annot = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Sample_Number_Table_1 %in% colnames(assay(vsd)[top_20_malig_gonod, ]),c("Type", "Hist_Type")] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot,
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+plt <- grid.grabExpr(draw(
+  Heatmap(assay(vsd)[top_20_malig_gonod, ],
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  ),
+  annotation_legend_side = "bottom"
+))
+master_plot_list$fig2$B <- plt
+
+pdf_filename <- "Plots/miRNA DEA/Heatmap_top_20_DE_miRNAs.pdf"
+pdf(file = pdf_filename, width = 15, height = 8, title = "Top 20 Differentially Expressed miRNAs between Malignant/Control")
+plot_grid(master_plot_list$fig2$B)
+dev.off()
+
+plot_grid(master_plot_list$fig2$B)
+```
+
+
+
+### DE of Malignant v Gonodal tissue samples
+
+```{r cache=TRUE}
+tissue_samples_DE = read.table("Plots/miRNA DEA/4. DE results table (unfiltered) Gonodal Controls (from new or final-lane) v 10 malignant GCT (final-lane).tsv", header = T, sep = "\t")
+tissue_samples_DE = tissue_samples_DE[tissue_samples_DE$padj < 0.1,]
+tissue_samples_DE = tissue_samples_DE[!is.na(tissue_samples_DE$padj),]
+tissue_samples_DE$absLFC = abs(tissue_samples_DE$log2FoldChange)
+tissue_samples_DE = tissue_samples_DE[order(tissue_samples_DE$absLFC, decreasing = T),]
+tissue_samples_DE = rownames(tissue_samples_DE)
+
+
+pdf_filename = "Plots/miRNA DEA/Heatmap_DE_tissue_samples.pdf"
+pdf(file = pdf_filename, width=15, height=8, title = "Differentially Expressed miRNAs for Malignant v Gonodal tissue samples")
+pheatmap(assay(deseq_matrix)[tissue_samples_DE,],
+          cluster_rows = FALSE,
+          show_rownames = T,
+          cluster_cols = T,
+          show_colnames = T,
+          annotation_col = heatmap_annot,
+          border_color=NA,
+          annotation_colors = heatmapcolors,
+          main = "Differentially Expressed miRNAs for Malignant v Gonodal tissue samples",
+          fontsize_row = 8)
+dev.off()
+pheatmap(assay(deseq_matrix)[tissue_samples_DE,],
+          cluster_rows = FALSE,
+          show_rownames = T,
+          cluster_cols = T,
+          show_colnames = T,
+          annotation_col = heatmap_annot,
+          border_color=NA,
+          annotation_colors = heatmapcolors,
+          main = "Differentially Expressed miRNAs for Malignant v Gonodal tissue samples",
+          fontsize_row = 8)
+```

@@ -1,0 +1,464 @@
+# Project R Functions
+
+
+## Define Colorschemes
+
+define some slightly less fluorescent versions of currently used colours
+
+```{r echo=TRUE, cache=TRUE}
+histological_subtype_palette <- scale_color_manual(values = c(
+  "Yolk sac tumour" = "#FEC539",
+  "Seminoma/Germinoma" = "#008FFF",
+  "Embryonal carcinoma" = "red",
+  "Teratoma" = "brown",
+  "Gonadal control" = "#00A34E",
+  "Testis fibroblasts" = "grey"
+))
+
+histological_subtype_palette_wt_ovary_distinction <- scale_color_manual(values = c(
+  "Yolk sac tumour" = "#FEC539",
+  "Seminoma/Germinoma" = "#008FFF",
+  "Embryonal carcinoma" = "red",
+  "Teratoma" = "brown",
+  "Gonadal control (testis)" = "#00A34E",
+  "Gonadal control (ovary)" = "#80d1a7",
+  "Testis fibroblasts" = "grey"
+))
+
+# make a copy without fibroblasts for plotting cohort-1 (which doesn't have any TF)
+histological_subtype_palette_sans_TF <-  scale_color_manual(values = c(
+  "Yolk sac tumour" = "#FEC539",
+  "Seminoma/Germinoma" = "#008FFF",
+  "Embryonal carcinoma" = "red",
+  "Teratoma" = "brown",
+  "Gonadal control" = "#00A34E"
+))
+
+# make a copy of this that will work for plots where its the "fill" not the "colour" attribute used
+histological_subtype_palette_fill <-  scale_fill_manual(values = c(
+  "Yolk sac tumour" = "#FEC539",
+  "Seminoma/Germinoma" = "#008FFF",
+  "Embryonal carcinoma" = "red",
+  "Teratoma" = "brown",
+  "Gonadal control" = "#00A34E",
+  "Testis fibroblasts" = "grey"
+))
+
+# make a copy without fibroblasts for plotting cohort-1 (which doesn't have any TF)
+histological_subtype_palette_fill_sans_TF <-  scale_fill_manual(values = c(
+  "Yolk sac tumour" = "#FEC539",
+  "Seminoma/Germinoma" = "#008FFF",
+  "Embryonal carcinoma" = "red",
+  "Teratoma" = "brown",
+  "Gonadal control" = "#00A34E"
+))
+```
+
+
+## Exclude items from one list in another
+
+This function takes a master vector x and removes items from x which are in excluded_items.
+
+```{r echo=TRUE, cache=TRUE}
+exclude <- function(x, excluded_items) {
+  x = x[!(x %in% excluded_items)]
+
+  if (any(excluded_items %in% x[!(x %in% excluded_items)])) {
+    stop("Error excluding items from list")
+  } else {
+    return(x)
+  }
+}
+```
+
+
+## Equalise Annotation/Counts Matrix
+
+This function takes an annotation matrix and a counts matrix and subselects both to only have the cells that are common to both.
+
+```{r echo=TRUE, cache=TRUE}
+equalise_annot_counts = function(annotation_matrix, counts_matrix) {
+	# make list of intersection of ids between annotation_matrix and counts
+	trimmed_ids = colnames(counts_matrix)
+	trimmed_ids = rownames(annotation_matrix)[rownames(annotation_matrix) %in% trimmed_ids]
+	trimmed_ids = trimmed_ids[trimmed_ids %in% rownames(annotation_matrix)]
+
+	annotation_matrix = annotation_matrix[rownames(annotation_matrix) %in% trimmed_ids,]
+	counts_matrix = counts_matrix[,colnames(counts_matrix) %in% trimmed_ids]
+	counts_matrix = counts_matrix[,rownames(annotation_matrix)]
+
+	return_tables = list(annotation_matrix, counts_matrix)
+	return(return_tables)
+}
+```
+
+
+## Trim FeatureCounts Matrix
+
+This function trims a featureCounts matrix to the standard gene x cell matrix.
+
+```{r echo=TRUE, cache=TRUE}
+trim_fc_matrix = function(counts_matrix) {
+	trimmed_matrix = counts_matrix
+	rownames(trimmed_matrix) = trimmed_matrix$Geneid
+	trimmed_matrix = trimmed_matrix[,7:dim(trimmed_matrix)[2]]
+	return(trimmed_matrix)
+}
+```
+
+
+
+## Deseq2/Volcano Convenience Function
+
+This function takes in arguments of row numbers for group A and group B, as well
+as labels for those groups.
+
+Deseq2 is then run to find the differentially expression
+between those two groups, and the resulting volcano plot is produced and saved
+to the specified subfolder within the "Plots" folder.
+
+Also saved in that folder are TSV and excel spreadsheets. The TSV contains all of
+the results from the comparison but the excel document contains just the filtered
+set meeting the QC thresholds and then has two tabs to view only the overexpressed
+and only the underexpressed subsets.
+No filtering is done on the results before plotting or saving.
+
+The function returns a named list with the different outputs.
+
+
+```{r echo=TRUE, cache=TRUE}
+deseq2_plot <- function(type, grpA_label, Aint, grpB_label, Bint, plot_counter, annot_table, raw_counts_matrix, forcenobatch = F, fitType = "parametric", subfolder) {
+  if (typeof(grpA_label) != "character") {
+    print("ERROR: Unexpected data type (", typeof(grpA_label), ") for argument 'grpA_label'.")
+    return(NULL)
+  }
+  if (typeof(grpB_label) != "character") {
+    print("ERROR: Unexpected data type (", typeof(grpB_label), ") for argument 'grpB_label'.")
+    return(NULL)
+  }
+  if (!is.numeric(Aint)) {
+    print("ERROR: Unexpected data type (", typeof(Aint), ") for argument 'Aint'.")
+    return(NULL)
+  }
+  if (!is.numeric(Bint)) {
+    print("ERROR: Unexpected data type (", typeof(Bint), ") for argument 'Bint'.")
+    return(NULL)
+  }
+  if (!is.data.frame(annot_table)) {
+    print("ERROR: Unexpected data type for argument 'annot_table'.")
+    return(NULL)
+  }
+  if (!is.data.frame(raw_counts_matrix)) {
+    print("ERROR: Unexpected data type for argument 'raw_counts_matrix'.")
+    return(NULL)
+  }
+  if (!dir.exists(paste0("Plots/", subfolder))) {
+    dir.create(paste0("Plots/", subfolder), recursive = TRUE, showWarnings = FALSE)
+  }
+
+
+
+  plot_counter <- plot_counter + 1
+  comparison_title <- paste0(grpB_label, " v ", grpA_label)
+  filename <- paste0(plot_counter, ". ", comparison_title, "\n(left side signifies highly expressed in ", grpB_label, ", and right side highly expressed in ", grpA_label, ")")
+
+  deseq_input_annot <- annot_table
+  kbl <- kable(deseq_input_annot, "latex", booktabs = T, caption = paste0(plot_counter, ". ", comparison_title)) %>%
+    row_spec(Aint, color = "white", background = "#D7261E") %>%
+    row_spec(Bint, color = "white", background = "#1ecfd7")
+  kbl <- kable_styling(kbl, latex_options = c("scale_down"))
+  kable_filename <- paste0("Plots/", subfolder, "/", plot_counter, ". ", comparison_title, " comparison table.pdf")
+  save_kable(kbl, file = kable_filename)
+  # now do same but not latex
+  kbl <- kable(deseq_input_annot, caption = paste0(plot_counter, ". ", comparison_title)) %>%
+    row_spec(Aint, color = "white", background = "#D7261E") %>%
+    row_spec(Bint, color = "white", background = "#1ecfd7")
+
+  deseq_input_annot[Aint, "CompSide"] <- grpA_label
+  deseq_input_annot[Bint, "CompSide"] <- grpB_label
+  rownames(deseq_input_annot) <- deseq_input_annot$Row.names
+  deseq_input_annot$Row.names <- NULL
+
+  deseq_input_annot <- deseq_input_annot[!is.na(deseq_input_annot$CompSide), ]
+  equalised_tables <- equalise_annot_counts(deseq_input_annot, raw_counts_matrix)
+  deseq_input_annot <- equalised_tables[[1]]
+  trimmed_counts <- equalised_tables[[2]]
+  trimmed_counts <- trimmed_counts[, rownames(deseq_input_annot)]
+  trimmed_counts <- trimmed_counts + 1
+
+  if ((length(unique(deseq_input_annot$batch)) > 1) & !forcenobatch) {
+    deseq_matrix_raw <- suppressMessages(DESeqDataSetFromMatrix(
+      countData = trimmed_counts,
+      colData = deseq_input_annot,
+      design = ~ CompSide + batch
+    ))
+  } else {
+    message(paste0("INFO: Not regressing batch effects as it seems there is only batch:", unique(deseq_input_annot$batch)))
+    deseq_matrix_raw <- suppressMessages(DESeqDataSetFromMatrix(
+      countData = trimmed_counts,
+      colData = deseq_input_annot,
+      design = ~CompSide
+    ))
+  }
+
+  deseq_matrix <- suppressMessages(DESeq(deseq_matrix_raw, fitType = fitType, parallel = F)) # TODO: fix needing parallel=f here in updated R version
+  deseq_results <- results(deseq_matrix, contrast = c("CompSide", grpA_label, grpB_label))
+  deseq_results <- suppressMessages(lfcShrink(deseq_matrix, parallel = TRUE, type = "ashr", contrast = c("CompSide", grpA_label, grpB_label), res = deseq_results))
+
+  # save tsv with all of the comparison results, not just statistically significant ones
+  write.table(x = as.data.frame(deseq_results), paste0("Plots/", subfolder, "/", plot_counter, ". ", "DE results table (unfiltered) ", comparison_title, ".tsv"), sep = "\t", row.names = T)
+
+
+  # write the excel output of the analysis containing only the statistically significant smallRNAs
+  # following request, these now have 3 tabs inside the excel document the first one with
+  # everything sorted by adj-p value and then two tabs for overexpressed and underexpressed only
+  deseq_filtered_results <- as.data.frame(deseq_results)
+
+  deseq_filtered_results <- deseq_filtered_results[(!is.na(deseq_filtered_results$padj)), ]
+  deseq_filtered_results <- deseq_filtered_results[deseq_filtered_results$padj < 0.05, ]
+  deseq_filtered_results <- deseq_filtered_results[abs(deseq_filtered_results$log2FoldChange) > 1, ]
+  deseq_filtered_results <- deseq_filtered_results[order(deseq_filtered_results$padj), ]
+
+  upreg_filtered_results <- deseq_filtered_results[deseq_filtered_results$log2FoldChange > 0, ]
+  upreg_sheet_name <- paste0("Only OE ", nrow(upreg_filtered_results))
+
+  downreg_filtered_results <- deseq_filtered_results[deseq_filtered_results$log2FoldChange < 0, ]
+  downreg_sheet_name <- paste0("Only UE ", nrow(downreg_filtered_results))
+
+
+  excel_filename <- paste0("Plots/", subfolder, "/", plot_counter, ". ", "DE results table ", comparison_title, ".xlsx")
+  WriteXLS(
+    x = c("deseq_filtered_results", "upreg_filtered_results", "downreg_filtered_results"),
+    SheetNames = c(paste0("DE (by adj p-value) ", nrow(deseq_filtered_results)), upreg_sheet_name, downreg_sheet_name),
+    ExcelFileName = excel_filename,
+    row.names = T
+  )
+
+
+  logFC_plot_filename <- paste0("Plots/", subfolder, "/", plot_counter, ". ", "DE LogFC plot ", comparison_title, ".pdf")
+  pdf(file = logFC_plot_filename, width = 7.5, height = 4, title = paste("Log2 FC of all", type, "between", grpA_label, "and", grpB_label))
+  plot(deseq_results$log2FoldChange, pch = 16, cex = .9, main = paste("Log2 FC of all", type, "between", grpA_label, "and", grpB_label), ylab = "Log2 Fold Change", col = rgb(red = 0, green = 0, blue = 0, alpha = 0.35))
+  dev.off()
+
+  if (interactive()) {
+    plot(deseq_results$log2FoldChange, pch = 16, cex = .9, main = paste("Log2 FC of all", type, "between", grpA_label, "and", grpB_label), ylab = "Log2 Fold Change", col = rgb(red = 0, green = 0, blue = 0, alpha = 0.35))
+  }
+
+  len_side1 <- length(unique(rownames(deseq_input_annot[deseq_input_annot$CompSide == (unique(deseq_input_annot$CompSide)[1]), ])))
+  len_side2 <- length(unique(rownames(deseq_input_annot[deseq_input_annot$CompSide == (unique(deseq_input_annot$CompSide)[2]), ])))
+  plot_caption <- paste0(
+    "Total features = ", nrow(deseq_results),
+    ", Cells in comparison split by '",
+    unique(deseq_input_annot$CompSide)[1], "' (n=", len_side1, ") and '", unique(deseq_input_annot$CompSide)[2], "' (n=", len_side2, ")"
+  )
+
+
+  p_cutoff <- 0.05
+  lfc_cutoff <- 1
+  plt <- EnhancedVolcano::EnhancedVolcano(deseq_results,
+    lab = rownames(deseq_results),
+    x = "log2FoldChange",
+    y = "pvalue",
+    pCutoff = p_cutoff,
+    FCcutoff = lfc_cutoff,
+    labSize = 2.25,
+    pointSize = 1.25,
+    title = paste0("Differential Expression of ", type, " (p<", p_cutoff, ";lFC>", lfc_cutoff, ")"),
+    subtitle = filename,
+    caption = plot_caption,
+    captionLabSize = 11,
+    subtitleLabSize = 11
+  )
+
+  volcano_filename <- paste0("Plots/", subfolder, "/", plot_counter, ". Volcano plot ", comparison_title, ".pdf")
+  ggsave(plot = plt, filename = volcano_filename, device = "pdf", width = 15, height = 8, dpi = 300)
+
+  # return a named list with items for the counter, serialised volcano ggplot, excel output filename, and serialed html kable comparison table
+  results_to_return <- list(counter = plot_counter, volcano = serialize(plt, NULL), excel = excel_filename, comptable = serialize(kbl, NULL))
+  return(results_to_return)
+}
+```
+
+
+## DE Excel to Heatmap
+
+This function takes a link to an excel spreadsheet output of a differential
+expression analysis and plots the statistically significant RNAs as a heatmap.
+By default it plots for all samples that are not part of "test-lane", but this is
+configurable by specifying a character vector of cell/sample names as the
+cells_to_use argument.
+
+
+```{r echo=TRUE, cache=TRUE}
+ExcelHeatmap <- function(excel_path, caption, uponly = FALSE, downonly = FALSE, cells_to_use = testless_cells) {
+  t <- read_excel(excel_path)
+  t$absLFC <- abs(t$log2FoldChange)
+  t <- t[order(t$absLFC, decreasing = T), ]
+  t <- t[t$absLFC > 1, ]
+  t <- t[!is.na(t$padj), ]
+  t <- t[t$padj < 0.05, ]
+  colnames(t)[1] <- "piRNA_id"
+  t$absLFC <- NULL
+  t$pvalue <- NULL
+  t$lfcSE <- NULL
+  t$baseMean <- NULL
+
+  if (uponly) {
+    t <- t[t$log2FoldChange > 0, ]
+  }
+
+  if (downonly) {
+    t <- t[t$log2FoldChange < 0, ]
+  }
+
+  heatmap_mat <- mat[t$piRNA_id, cells_to_use]
+  print(Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 9),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat), ], col = cmplxhmapcols)
+  ))
+  DT::datatable(t, class = "cell-border stripe", rownames = F, caption = caption)
+}
+```
+
+
+
+## Network Pathway-piRNA Plot
+
+This function takes a _result_df_ dataframe containing a filtered version of the
+output returned from the _run_pathfindR()_ function. By filtered, it means removing duplicates
+and reducing the number of rows, such as selecting only the top 5 rows of the returned
+output. It also takes another dataframe as argument, the _piR_Gene_df_, this is
+a dataframe resulting from the merge the original piRNA differential expression
+results, with the "flattened" version of those results which has had its piRNAs
+renamed to target mRNAs and flattened.
+
+
+```{r echo=TRUE, cache=TRUE}
+piRNA_pathway_network <- function(result_df, piR_Gene_df, comparison_label, num_terms = 10, layout = "stress", use_description = TRUE, node_size = "num_genes") {
+  if (!is.numeric(num_terms) & !is.null(num_terms)) {
+    stop("`num_terms` must either be numeric or NULL!")
+  }
+  if (!is.logical(use_description)) {
+    stop("`use_description` must either be TRUE or FALSE!")
+  }
+  ID_column <- ifelse(use_description, "Term_Description",
+    "ID"
+  )
+  val_node_size <- c("num_genes", "p_val")
+  if (!node_size %in% val_node_size) {
+    stop("`node_size` should be one of ", paste(dQuote(val_node_size),
+      collapse = ", "
+    ))
+  }
+  if (!is.data.frame(result_df)) {
+    stop("`result_df` should be a data frame")
+  }
+  necessary_cols <- c(
+    ID_column, "lowest_p", "Up_regulated",
+    "Down_regulated"
+  )
+  if (!all(necessary_cols %in% colnames(result_df))) {
+    stop(paste(c(
+      "All of", paste(necessary_cols, collapse = ", "),
+      "must be present in `results_df`!"
+    ), collapse = " "))
+  }
+  if (!is.null(num_terms)) {
+    if (nrow(result_df) < num_terms) {
+      num_terms <- NULL
+    }
+  }
+
+
+  result_df <- result_df[order(result_df$lowest_p, decreasing = FALSE), ]
+  if (!is.null(num_terms)) {
+    result_df <- result_df[1:num_terms, ]
+  }
+
+  graph_df <- data.frame()
+  for (i in base::seq_len(nrow(result_df))) {
+    up_genes <- unlist(strsplit(
+      result_df$Up_regulated[i],
+      ", "
+    ))
+    down_genes <- unlist(strsplit(
+      result_df$Down_regulated[i],
+      ", "
+    ))
+    genes <- c(up_genes, down_genes)
+    for (gene in genes) {
+      graph_df <- rbind(graph_df, data.frame(Term = result_df[
+        i,
+        ID_column
+      ], Gene = gene))
+    }
+  }
+  up_genes <- lapply(result_df$Up_regulated, function(x) {
+    unlist(strsplit(
+      x,
+      ", "
+    ))
+  })
+  up_genes <- unlist(up_genes)
+
+  colnames(piR_Gene_df)[1:2] <- c("Gene", "Term")
+  rownames(piR_Gene_df) <- NULL
+
+  graph_df <- rbind(graph_df, piR_Gene_df[, c("Gene", "Term")])
+
+
+  g <- igraph::graph_from_data_frame(graph_df, directed = FALSE)
+  cond_term <- names(igraph::V(g)) %in% result_df[, ID_column]
+  cond_up_gene <- names(igraph::V(g)) %in% up_genes
+
+  # label node type
+  igraph::V(g)$type <- ifelse(cond_term, "term", "gene")
+  cond_pirna <- grepl(pattern = "^piR-", names(igraph::V(g)))
+  igraph::V(g)$type[cond_pirna] <- "piRNA"
+
+  # label if gene up or down regulated
+  igraph::V(g)$Gene <- ifelse(cond_up_gene, "Up_regulated", "Down_regulated")
+
+
+  igraph::V(g)$logfc <- NA
+  igraph::V(g)$logfc[igraph::V(g)$name %in% piR_Gene_df$Term] <- (-1 * piR_Gene_df$log2FoldChange) # flip LFC again this time so we can see actual piRNA LFC
+
+  igraph::V(g)$p[igraph::V(g)$name %in% piR_Gene_df$Term] <- piR_Gene_df$padj
+
+
+  set.seed(486)
+  ggraph(g, layout = "nicely") +
+    geom_edge_link0(edge_colour = "grey66") +
+    geom_node_point(data = . %>% filter(type == "term"), color = "black", fill = "#E5D7BF", shape = 24, size = 13) +
+    geom_node_point(data = . %>% filter(type == "gene"), aes(colour = Gene), shape = 18, size = 14) + scale_color_manual(values = c("#009E73", "#F8766D"), labels = c("Downregulated in pathway", "Upregulated in pathway")) +
+    geom_node_point(data = . %>% filter(type == "piRNA"), aes(fill = logfc, size = abs(logfc)), shape = 21) + scale_fill_distiller(palette = "RdYlBu") +
+    geom_node_label(data = . %>% filter(!is.na(type)), ggplot2::aes_(label = ~name), repel = T, size = 4) +
+    ggplot2::scale_size(range = c(5, 10))
+}
+```
+
+
+
+## Write Vector Figures to Powerpoint
+
+```{r echo=TRUE, cache=TRUE}
+writeFigure <- function(ggplot = NA, plotcmd = NA) {
+  if (!missing(ggplot)) {
+    plt <- ggplot
+  } else if (!missing(plotcmd)) {
+    plt <- plotcmd
+  }
+
+  if (!file.exists("Figures.ppt")) {
+    read_pptx() %>%
+      print(target = "Figures.pptx")
+  }
+  ppt = read_pptx(path = "Figures.pptx")
+
+  add_slide(ppt, layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(dml(ggobj = plt), location = ph_location_fullsize()) %>%
+    print(target = "Figures.pptx")
+}
+```

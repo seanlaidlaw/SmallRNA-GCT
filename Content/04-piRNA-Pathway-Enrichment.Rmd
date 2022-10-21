@@ -1,0 +1,291 @@
+
+# piRNA Pathway Enrichment
+
+## Load predicted mRNA Targets
+
+```{r cache=TRUE, include=FALSE}
+i = 0
+for (count_file in list.files("Data/piRNA_mRNA_predictions/miRanda_predicted_piRNA_targets", pattern = "*.parsed.txt", full.names = T)) {
+	x = read.table(file = count_file, header = F, sep = "\t", stringsAsFactors = F)
+	colnames(x)[1] = "piRbaseID"
+	colnames(x)[2] = "Transcript"
+	colnames(x)[3] = "Score"
+
+	# append each counts file to one another to make a matrix
+	if (i == 0) {
+		piRNA_predictions = x
+	} else {
+		piRNA_predictions = rbind(piRNA_predictions, x)
+	}
+
+	i = i+1
+}
+rm(count_file)
+rm(x)
+rm(i)
+```
+
+
+```{r echo=TRUE}
+datatable(head(piRNA_predictions), rownames = F)
+```
+
+
+```{r cache=TRUE, include=FALSE}
+if (!file.exists("rds/ensembl_hsapiens.rds")) {
+  ensembl_hsapiens <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  gc() # run garbage collection to free up memory from deleted objects
+  saveRDS(ensembl_hsapiens, file = "rds/ensembl_hsapiens.rds")
+} else {
+  ensembl_hsapiens <- readRDS("rds/ensembl_hsapiens.rds")
+}
+
+
+
+if (!file.exists("rds/hgnc_symbol_piRNA_prediction.rds")) {
+  gc() # run garbage collection to free up memory from deleted objects
+
+  transcript_names <- getBM(
+    attributes = c("hgnc_symbol", "refseq_mrna"),
+    filters = "refseq_mrna",
+    values = piRNA_predictions$Transcript,
+    mart = ensembl_hsapiens
+  )
+
+  colnames(transcript_names)[2] <- "Transcript"
+  piRNA_predictions <- merge(piRNA_predictions, transcript_names, by = "Transcript")
+  piRNA_predictions$Gene <- piRNA_predictions$hgnc_symbol
+  piRNA_predictions$hgnc_symbol <- NULL
+  piRNA_predictions[, c("piRbaseID", "Gene", "Score", "Transcript")]
+  saveRDS(piRNA_predictions, file = "rds/hgnc_symbol_piRNA_prediction.rds")
+} else {
+  piRNA_predictions <- readRDS("rds/hgnc_symbol_piRNA_prediction.rds")
+}
+```
+
+
+## Pathway Analysis
+
+### Malignant v Normal
+
+#### mRNA Targets
+
+```{r cache=TRUE, include=FALSE}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Healthy v Tumours.tsv$", full.names = T)
+deseq_results = read.table(deseq_results)
+
+deseq_results <- deseq_results[!is.na(deseq_results$padj), ]
+deseq_results <- deseq_results[deseq_results$padj < 0.05, ]
+deseq_results <- deseq_results[abs(deseq_results$log2FoldChange) > 1, ]
+deseq_results <- deseq_results[order(abs(deseq_results$log2FoldChange), decreasing = T), ]
+deseq_results <- as.data.frame(deseq_results)
+deseq_results$piRbaseID <- rownames(deseq_results)
+rownames(deseq_results) <- NULL
+
+distinct_piRNA_predictions <- piRNA_predictions[, c("piRbaseID", "Gene")]
+distinct_piRNA_predictions <- distinct(distinct_piRNA_predictions)
+
+target_gene_counts <- merge(deseq_results, distinct_piRNA_predictions, by = "piRbaseID")
+target_gene_counts <- distinct(target_gene_counts)
+
+if (any(duplicated(target_gene_counts$piRbaseID))) {
+  stop("OOh! There are still duplicates in target_gene_counts, identical duplicates were removed so many those that are left are not perfect duplicates, e.g. have different binding sites or scores")
+}
+
+gene_map_multi_piRNAs <- target_gene_counts[, c("piRbaseID", "Gene")]
+target_gene_counts$piRbaseID <- NULL
+
+
+target_gene_counts_means <- target_gene_counts %>%
+  group_by(Gene) %>%
+  summarise_at(c("baseMean", "lfcSE", "pvalue", "padj"), funs(mean))
+target_gene_counts_means <- target_gene_counts_means[target_gene_counts_means$Gene != "", ]
+
+target_gene_counts_lfc <- target_gene_counts %>%
+  group_by(Gene) %>%
+  summarise_at(c("log2FoldChange"), funs(sum))
+target_gene_counts_lfc <- target_gene_counts_lfc[target_gene_counts_lfc$Gene != "", ]
+rm(target_gene_counts)
+target_gene_counts <- merge(target_gene_counts_lfc, target_gene_counts_means, by = "Gene")
+rm("target_gene_counts_lfc", "target_gene_counts_means")
+target_gene_counts <- as.data.frame(target_gene_counts)
+
+rownames(target_gene_counts) <- target_gene_counts$Gene
+target_gene_counts <- target_gene_counts[target_gene_counts$Gene != "", ]
+target_gene_counts$Gene <- NULL
+target_gene_counts <- target_gene_counts[, c("baseMean", "log2FoldChange", "lfcSE", "pvalue", "padj")]
+
+
+tumour_mrna <- as.data.frame(target_gene_counts)
+rm("deseq_matrix_raw", "deseq_matrix", "deseq_results", "deseq_input_annot", "trimmed_counts", "equalised_tables", "trimmed_counts", "target_gene_counts")
+
+tumour_mrna$TargetGene <- rownames(tumour_mrna)
+rownames(tumour_mrna) <- NULL
+tumour_mrna$baseMean <- NULL
+tumour_mrna$absLFC <- NULL
+tumour_mrna$pvalue <- NULL
+tumour_mrna$lfcSE <- NULL
+tumour_mrna <- tumour_mrna[, c("TargetGene", "log2FoldChange", "padj")]
+
+tumour_mrna <- tumour_mrna[order(abs(tumour_mrna$log2FoldChange), decreasing = T), ]
+tumour_mrna$log2FoldChange <- tumour_mrna$log2FoldChange * -1
+```
+
+
+
+#### KEGG Pathway Targets
+
+```{r}
+# Rewrite the manual steps run by the run_pathfindR wrapper to avoid creation of HTML
+# result document which conflicts with Rmarkdown compilation
+#
+#  KEGG_mRNA_targets_malignant_piRNA_DE <- run_pathfindR(
+#    input = tumour_mrna,
+#    gene_sets = "KEGG",
+#    output_dir = "Plots/piRNA-Target Pathway Enrichment/Malignant_v_Normal/",
+#    sig_gene_thr = 0,
+#    max_to_plot = NULL,
+#    pin_name_path = "STRING",
+#    visualize_enriched_terms = FALSE,
+#    plot_enrichment_chart = FALSE
+#  )
+
+
+if (!file.exists('rds/KEGG_mRNA_targets_malignant_piRNA_DE.rds')) {
+  RA_processed <- input_processing(input = tumour_mrna,
+                                   pin_name_path  = "STRING")
+
+  # using "BioCarta" as our gene sets for enrichment
+  biocarta_list <- fetch_gene_set(gene_sets = "KEGG")
+  biocarta_gsets <- biocarta_list[[1]]
+  biocarta_descriptions <- biocarta_list[[2]]
+
+
+  n_iter <- 10 ## number of iterations
+  combined_res <- NULL ## to store the result of each iteration
+
+  for (i in 1:n_iter) {
+
+    ###### Active Subnetwork Search
+    # output_dir = "Plots/piRNA-Target Pathway Enrichment/Malignant_v_Normal/"
+    snws_file <- paste0("active_snws_", i) # Name of output file
+    active_snws <- active_snw_search(input_for_search = RA_processed,
+                                     pin_name_path = "STRING",
+                                     snws_file = snws_file,
+                                     sig_gene_thr = 0.00)
+
+    ###### Enrichment Analyses
+    current_res <- enrichment_analyses(snws = active_snws,
+                                       sig_genes_vec = RA_processed$GENE,
+                                       pin_name_path = "STRING",
+                                       genes_by_term = biocarta_gsets,
+                                       term_descriptions = biocarta_descriptions)
+
+    ###### Combine results via `rbind`
+    combined_res <- rbind(combined_res, current_res)
+  }
+
+  ###### Summarize Combined Enrichment Results
+  summarized_df <- summarize_enrichment_results(combined_res)
+
+  ###### Annotate Affected Genes Involved in Each Enriched Term
+  KEGG_mRNA_targets_malignant_piRNA_DE <- annotate_term_genes(result_df = summarized_df,
+                                   input_processed = RA_processed,
+                                   genes_by_term = biocarta_gsets)
+
+  rm(list = c("summarized_df", "combined_res", "active_snws", "snws_file", "n_iter", "biocarta_descriptions", "biocarta_gsets", "biocarta_list", "RA_processed"))
+
+  gc() # run garbage collection to free up memory from deleted objects
+  saveRDS(KEGG_mRNA_targets_malignant_piRNA_DE, file = 'rds/KEGG_mRNA_targets_malignant_piRNA_DE.rds')
+  unlink("active_snw_search", recursive = T)
+} else {
+  KEGG_mRNA_targets_malignant_piRNA_DE = readRDS('rds/KEGG_mRNA_targets_malignant_piRNA_DE.rds')
+}
+```
+
+```{r}
+plt = pathfindR::enrichment_chart(KEGG_mRNA_targets_malignant_piRNA_DE, top_terms = 20)
+master_plot_list$figS3$A = plt
+
+ggsave(plt,
+       filename = "Plots/piRNA Pathway Enrichment/Top_enriched_Pathways_in_Malignant_GCT.pdf",
+       device = "pdf",
+       width = 12,
+       height = 6)
+plt
+```
+
+
+```{r}
+datatable(KEGG_mRNA_targets_malignant_piRNA_DE, rownames = F)
+```
+
+
+```{r include=FALSE}
+# save table as is for supplementary tables
+write.table(KEGG_mRNA_targets_malignant_piRNA_DE,
+            file = "Plots/piRNA Pathway Enrichment/Enriched_Pathways_in_Malignant_GCT.tsv",
+            sep = "\t",
+            row.names = F)
+```
+
+
+##### Top 10
+
+```{r include=FALSE}
+# filter to get only those enriched more than |2|
+# result_df <- head(KEGG_mRNA_targets_malignant_piRNA_DE[abs(KEGG_mRNA_targets_malignant_piRNA_DE$Fold_Enrichment) > 2, ], 11)
+result_df <- head(KEGG_mRNA_targets_malignant_piRNA_DE, 11)
+result_df <- result_df[!(result_df$ID %in% c("hsa04211")), ] # this is to remove the duplicate
+top_x <- 1:10
+result_df <- result_df[top_x, ]
+
+
+# Merge the target gene DE with piRNA DE results
+piR_Gene_df <- data.frame()
+for (j in 1:length(result_df$Up_regulated)) {
+  set_upreg <- result_df$Up_regulated[[j]]
+  set_upreg <- strsplit(set_upreg, split = ", ")[[1]]
+  for (i in 1:length(set_upreg)) {
+    pirna_in_upreg <- gene_map_multi_piRNAs[gene_map_multi_piRNAs$Gene == set_upreg[i], ]
+    pirna_in_upreg <- pirna_in_upreg[!duplicated(pirna_in_upreg$piRbaseID), ]
+    piR_Gene_df <- rbind(piR_Gene_df, pirna_in_upreg[, c("Gene", "piRbaseID")])
+  }
+}
+for (j in 1:length(result_df$Down_regulated)) {
+  set_downreg <- result_df$Down_regulated[[j]]
+  print(set_downreg)
+  if (set_downreg != "") {
+    set_downreg <- strsplit(set_downreg, split = ", ")[[1]]
+    for (i in 1:length(set_downreg)) {
+      pirna_in_downreg <- gene_map_multi_piRNAs[gene_map_multi_piRNAs$Gene == set_downreg[i], ]
+      pirna_in_downreg <- pirna_in_downreg[!duplicated(pirna_in_downreg$piRbaseID), ]
+      piR_Gene_df <- rbind(piR_Gene_df, pirna_in_downreg[, c("Gene", "piRbaseID")])
+    }
+  }
+}
+
+rownames(piR_Gene_df) <- NULL # inherited rownumbers from before merge, the numbers don't mean anything so remove them here
+colnames(piR_Gene_df)[1] <- "TargetGene"
+piR_Gene_df <- merge(piR_Gene_df, tumour_mrna[, c("TargetGene", "log2FoldChange", "padj")], by = "TargetGene")
+piR_Gene_df <- distinct(piR_Gene_df)
+rownames(piR_Gene_df) <- NULL
+piR_Gene_df <- piR_Gene_df[!duplicated(piR_Gene_df$piRbaseID), ]
+datatable(piR_Gene_df, rownames = F)
+```
+
+
+Numerous studies have demonstrated additional roles of piRNA in post-transcriptional gene silencing, targeting mRNAs [@Gou_2014, @Watanabe_2014, @Rouget_2010] in a similar mechanism to miRNA gene repression [@Liu_2019]. This mechanism has previously been been studied in lung carcinoma where introduced piR-55490 reduced cell proliferation through the targeting of mTOR 3′-UTR mRNA [@Peng_2015]. We were thus interested in pathways that piRNAs could be targeting via similar mechanisms.
+
+We attempted to deduce the functional impact of these enriched piRNAs by aligning the list of differentially expressed piRNAs in tumour to the human reference transcriptome. Transcripts matching the quality control thresholds for alignment with our piRNAs were used to construct a pathway enrichment network. The KEGG pathways which saw the greatest enrichment in tumour-derived piRNA targets were mostly related to signalling  pathways (JAK-STAT, RAP1, Calcium, and RAS signalling) and cancer-associated pathways (Prostate cancer, Gastric cancer, non-small cell lung cancer).
+
+
+```{r fig.width=20, fig.height=12}
+plt = piRNA_pathway_network(result_df, piR_Gene_df, comparison_label = "malignant v Normal") +
+  ggtitle("Network of Enriched Pathways in GCT predicted from DE piRNAs") +
+  theme(plot.title = element_text(size=24))
+master_plot_list$fig6 = plt
+ggsave(filename = "Plots/piRNA Pathway Enrichment/Pathways1-10.pdf", device = "pdf",width = 10, height = 6, scale = 2)
+plt
+```
+

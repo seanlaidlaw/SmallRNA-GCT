@@ -1,0 +1,949 @@
+# sncRNA Distributions
+
+## Family Distribution
+
+To calculate the proportion of reads coming from each of the different small
+non-coding RNA families, the aligned bam files were processed using the script
+`scripts/calculate_nt_length_stats.sh`. This ran two things:
+
+- Firstly it calculated the length of each of the reads in each sample using awk to measure the length of each of the reads in the bam. This was saved per bam.
+
+- Secondly, it performed a bedtools intersect operation between
+the bam files and the DASHR database downloaded from the DASHR website as a
+bed file. The intersection of the bam with the DASHR database was output as a
+bed file thus annotating each read that intersected with the chr,start,end of
+an entry in the DASHR database.
+
+The produced bed files of the intersections were processed with the script
+`scripts/summarize_sncRNA_family_counts.R`. This Rscript iterates over each of
+the DASHR intersected bams and runs a `table()` operation to get the number of
+times each sncRNA family was reported in the bam. These counts (from each of the
+bams) were merged into one table containing the counts for each family in each
+bam.
+
+```{r}
+sncRNA_families_df = read.table("Data/sncRNA_stats/sncRNA_family_counts.tsv", sep="\t",)
+```
+
+```{r}
+# remove test-lane samples
+sncRNA_families_df = sncRNA_families_df[,colnames(sncRNA_families_df) %in% c(testless_cells,"sncRNA_family")]
+```
+
+
+```{r}
+# convert wide to long table for use with ggplot
+melt_sncRNA_families = melt(sncRNA_families_df, id.vars = c("sncRNA_family"))
+```
+
+
+```{r include=TRUE}
+# clean up classifications
+melt_sncRNA_families$Category = melt_sncRNA_families$sncRNA_family
+## set value for tsRNAs (both 5' tRNA derived and 3') to the "tRNA_Family" category
+melt_sncRNA_families$Category[melt_sncRNA_families$Category %in% c("tRF5", "tRF3")] = "tRNA_Family"
+melt_sncRNA_families$Category[melt_sncRNA_families$Category %in% c("tRNA")] = "tRNA_Family"
+
+## group together the miRNAs
+melt_sncRNA_families$Category[melt_sncRNA_families$Category %in% c("mir-3p", "mir-5p", "mir-5p3pno", "miRNAprimary")] = "miRNA"
+```
+
+```{r}
+# add Hist_Type annotation
+colnames(melt_sncRNA_families)[2] = "Row.names"
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("Hist_Type", "Row.names")], by = "Row.names")
+# add sample Type annotation
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("Type", "Row.names")], by = "Row.names")
+# add tissue_type annotation
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("tissue_type", "Row.names")], by = "Row.names")
+# add malignancy annotation
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("Normal_or_Tumour", "Row.names")], by = "Row.names")
+# add additional grouped sample category annotation
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("SampleCategoryGrouped", "Row.names")], by = "Row.names")
+# add batch information
+melt_sncRNA_families = merge(melt_sncRNA_families, testless_annot[,c("batch", "Row.names")], by = "Row.names")
+```
+
+### Description
+
+```{r}
+reads_per_category = melt_sncRNA_families[c("Category","value","SampleCategoryGrouped")] %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Category) %>%
+  summarise(counts = sum(value))
+total_reads = sum(reads_per_category$counts)
+
+lnc_RNA_proportion = (reads_per_category$counts[reads_per_category$Category == "lnc_RNA"] / total_reads) * 100
+miRNA_proportion = (reads_per_category$counts[reads_per_category$Category == "miRNA"] / total_reads) * 100
+piRNA_proportion = (reads_per_category$counts[reads_per_category$Category == "piRNA"] / total_reads) * 100
+```
+
+We have `r total_reads` total reads in the entire dataset of `r length(unique(melt_sncRNA_families$Row.names))` samples, of which `r reads_per_category$counts[reads_per_category$Category == "lnc_RNA"]` are lncRNA,`r reads_per_category$counts[reads_per_category$Category == "miRNA"]` are miRNA, and `r reads_per_category$counts[reads_per_category$Category == "piRNA"]` piRNA.
+
+This corresponds to `r lnc_RNA_proportion`% lncRNA, `r miRNA_proportion`% miRNA and `r piRNA_proportion`% piRNA.
+
+```{r}
+rm(reads_per_category)
+rm(total_reads)
+rm(lnc_RNA_proportion)
+rm(miRNA_proportion)
+rm(piRNA_proportion)
+```
+
+```{r}
+sncfamily_proportions = melt_sncRNA_families[c("Row.names","Category","value","SampleCategoryGrouped")] %>%
+  filter(Category != "lnc_RNA") %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Row.names, Category) %>%
+  summarise(counts = sum(value))
+```
+
+
+```{r}
+cell_read_totals = sncfamily_proportions %>%
+  group_by(Row.names) %>%
+  summarise(totals = sum(counts))
+```
+
+```{r}
+sncfamily_proportions = merge(sncfamily_proportions, cell_read_totals, by="Row.names", all=T) %>% mutate(proportion=100*counts/totals) %>% select(-totals,-counts)
+sncfamily_proportions %>%
+  filter(Category=="miRNA") %>%
+  select(proportion) %>%
+  summary()
+```
+
+
+```{r}
+sncfamily_proportions %>%
+  filter(Category=="piRNA") %>%
+  select(proportion) %>%
+  summary()
+```
+
+
+
+```{r}
+reads_per_category_sanslncRNA = melt_sncRNA_families[c("Category","value","SampleCategoryGrouped")] %>%
+  filter(Category != "lnc_RNA") %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Category) %>%
+  summarise(counts = sum(value))
+total_reads_sanslnc = sum(reads_per_category_sanslncRNA$counts)
+
+lnc_RNA_proportion_sanslnc = (reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "lnc_RNA"] / total_reads_sanslnc) * 100
+miRNA_proportion_sanslnc = (reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "miRNA"] / total_reads_sanslnc) * 100
+piRNA_proportion_sanslnc = (reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "piRNA"] / total_reads_sanslnc) * 100
+```
+
+We have `r total_reads_sanslnc` total non-lncRNA reads in the dataset of `r length(unique(melt_sncRNA_families$Row.names))` samples, of which `r reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "lnc_RNA"]` are lncRNA,`r reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "miRNA"]` are miRNA, and `r reads_per_category_sanslncRNA$counts[reads_per_category_sanslncRNA$Category == "piRNA"]` piRNA.
+
+This corresponds to `r lnc_RNA_proportion_sanslnc`% lncRNA, `r miRNA_proportion_sanslnc`% miRNA and `r piRNA_proportion_sanslnc`% piRNA.
+
+```{r}
+rm(reads_per_category_sanslncRNA)
+rm(total_reads_sanslnc)
+rm(lnc_RNA_proportion_sanslnc)
+rm(miRNA_proportion_sanslnc)
+rm(piRNA_proportion_sanslnc)
+```
+
+```{r}
+# Ovary GC
+reads_per_category_GC = melt_sncRNA_families[c("Category","value","SampleCategoryGrouped")] %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  filter(SampleCategoryGrouped == "Ovary control samples (n=4)") %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Category) %>%
+  summarise(counts = sum(value))
+total_reads = sum(reads_per_category_GC$counts)
+
+piRNA_proportion = (reads_per_category_GC$counts[reads_per_category_GC$Category == "piRNA"] / total_reads) * 100
+piRNA_proportion
+```
+```{r}
+rm(reads_per_category_GC)
+rm(total_reads)
+rm(piRNA_proportion)
+```
+
+
+```{r}
+# Testis GC
+reads_per_category_GC = melt_sncRNA_families[c("Category","value","SampleCategoryGrouped")] %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  filter(SampleCategoryGrouped == "Testis control samples (n=4)") %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Category) %>%
+  summarise(counts = sum(value))
+total_reads = sum(reads_per_category_GC$counts)
+
+piRNA_proportion = (reads_per_category_GC$counts[reads_per_category_GC$Category == "piRNA"] / total_reads) * 100
+piRNA_proportion
+```
+```{r}
+rm(reads_per_category_GC)
+rm(total_reads)
+rm(piRNA_proportion)
+```
+
+
+```{r}
+# the malignant GCT tissue
+reads_per_category_GCT = melt_sncRNA_families[c("Category","value","SampleCategoryGrouped")] %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  filter(SampleCategoryGrouped %in% c("Malignant GCTs (testicular origin) (n=4)", "Malignant GCTs (ovarian origin) (n=6)")) %>%
+  select(-SampleCategoryGrouped) %>%
+  group_by(Category) %>%
+  summarise(counts = sum(value))
+total_reads = sum(reads_per_category_GCT$counts)
+
+piRNA_proportion = (reads_per_category_GCT$counts[reads_per_category_GCT$Category == "piRNA"] / total_reads) * 100
+piRNA_proportion
+```
+
+
+```{r include=TRUE}
+datatable(melt_sncRNA_families)
+```
+
+### Per Sample
+
+```{r fig.height = 3, fig.width = 5, include=TRUE}
+for (cell_name in unique(sort(melt_sncRNA_families$Row.names))) {
+  cell_sncRNA_families <- melt_sncRNA_families[melt_sncRNA_families$Row.names == cell_name, ]
+
+  plt = ggplot(cell_sncRNA_families, aes(x = Category, y = value)) +
+    geom_boxplot(alpha = 0.8) +
+    geom_jitter(alpha = 0.5) +
+    facet_wrap(~Row.names) +
+    labs(
+      x = "small ncRNA family",
+      y = "count",
+      title = paste0(
+        "Boxplot of small ncRNA counts by small ncRNA family in sample ", cell_name,
+        " (", unique(cell_sncRNA_families$Type), " - ",
+        unique(cell_sncRNA_families$Hist_Type), " - ",
+        unique(cell_sncRNA_families$tissue_type),
+        ")"
+      )
+    )
+  ggsave(plt, filename = paste0("Plots/sncRNA_Distributions/sncRNA_Families/Per_Sample/Boxplot_sncRNA_family_counts_for_sample_",cell_name,".pdf"), device = "pdf", width = 5, height = 3, scale=2)
+  print(plt)
+}
+```
+
+### Per Hist_type
+
+```{r fig.height = 9, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_sncRNA_families, aes(x = Category, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  coord_trans(y = "log2") +
+  facet_wrap(~Hist_Type) +
+  labs(
+    x = "Small ncRNA family",
+    y = "Count",
+    title = "Boxplot of small ncRNA counts by small ncRNA family by Histological subtype"
+  )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Boxplot_sncRNA_family_counts_Hist_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+#### Per Hist_type split by sample type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_sncRNA_families, aes(x = Category, y = value, color = Type)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~Hist_Type) +
+  labs(
+    x = "small ncRNA family",
+    y = "count",
+    title = "Boxplot of small ncRNA counts by small ncRNA family by Histological subtype, colored by sample type"
+  )
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Boxplot_sncRNA_family_counts_hist_type_and_sample_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+
+### Per SampleCategoryGrouped
+
+#### Stacked Barcharts
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+# alternative color schemes that also worked
+# five38_color_range = colorRampPalette(colors = pal("five38"),bias = 0.75, interpolate="spline")
+# five38_color_range = five38_color_range(9)
+# five38_color_range = RColorBrewer::brewer.pal(name = "Set1", n = 9)
+# five38_color_range = pal("few_medium")
+# five38_color_range = scale_fill_d3()
+five38_color_range = RColorBrewer::brewer.pal(name = "Paired", n = 9)
+
+plt <- ggplot(melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),],
+              aes(x = Category, y = value, fill=SampleCategoryGrouped)) +
+  geom_bar(position="stack", stat="identity") +
+  theme_scientific() +
+  scale_fill_manual(values = five38_color_range) +
+  labs(
+    x = "Small ncRNA family",
+    y = "Absolute counts of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA counts by small ncRNA family",
+    fill = "Sample Category"
+  )
+
+master_plot_list$fig1$A = plt
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_counts_by_updated_sample_category_x.pdf", device = "pdf", width = 14, height = 7, scale=1)
+plt
+```
+
+```{r fig.height = 7, fig.width = 7, include=TRUE}
+five38_color_range = RColorBrewer::brewer.pal(name = "Paired", n = 9)
+
+# same plot but split by batch
+melt_sncRNA_families$Set = ""
+melt_sncRNA_families$Set[melt_sncRNA_families$batch == "original"] = "Set-1"
+melt_sncRNA_families$Set[melt_sncRNA_families$batch == "new"] = "Set-2"
+
+plt <- ggplot(melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),],
+              aes(x = Category, y = value, fill=SampleCategoryGrouped)) +
+  geom_bar(position="stack", stat="identity") +
+  facet_wrap(~Set, nrow = 1,scales = "free") +
+  theme_scientific() +
+  scale_fill_manual(values = five38_color_range) +
+  labs(
+    x = "Small ncRNA family",
+    y = "Absolute counts of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA counts by small ncRNA family",
+    fill = "Sample Category"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_counts_by_updated_sample_category_split_by_batch.pdf", device = "pdf", width = 10, height = 8, scale=1)
+master_plot_list$figS5$A = plt
+plt
+```
+
+
+```{r fig.height = 8, fig.width = 12, include=TRUE}
+# plot proportions
+fig1b_sncRNA_fam = melt_sncRNA_families
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$tissue_type == "Hs.1.Tes" & fig1b_sncRNA_fam$Type == "Cell line"] = "Testis fibroblast\n cell line (n=3)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$tissue_type == "Hs.1.Tes" & fig1b_sncRNA_fam$Type == "Extracellular vesicle"] = "Testis fibroblast\n EVs (n=4)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$Hist_Type == "Teratoma"] = "Teratoma (n=1)"
+
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$Type == "Tissue" & fig1b_sncRNA_fam$Hist_Type == "Embryonal carcinoma"] = "EC (n=2)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$Type == "Tissue" & fig1b_sncRNA_fam$Hist_Type == "Yolk sac tumour"] = "YST (n=4)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$Type == "Tissue" & fig1b_sncRNA_fam$Hist_Type == "Seminoma/Germinoma"] = "Germinoma (n=4)"
+
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$SampleCategoryGrouped == "Malignant GCT cell lines (n=9)"] = "Malignant GCT\ncell lines (n=9)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$SampleCategoryGrouped == "Malignant GCT EVs (n=12)"] = "Malignant GCT\n EVs (n=12)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$SampleCategoryGrouped == "Ovary control samples (n=4)"]  = "Ovary control\n samples (n=4)"
+fig1b_sncRNA_fam$SampleCategoryGrouped[fig1b_sncRNA_fam$SampleCategoryGrouped == "Testis control samples (n=4)"]  = "Testis control\n samples (n=4)"
+
+# set order of SampleCategoryGrouped as he requested
+fig1b_sncRNA_fam$SampleCategoryGrouped = factor(fig1b_sncRNA_fam$SampleCategoryGrouped, c("Germinoma (n=4)", "YST (n=4)", "EC (n=2)", "Teratoma (n=1)", "Malignant GCT\ncell lines (n=9)", "Malignant GCT\n EVs (n=12)", "Testis fibroblast\n cell line (n=3)", "Testis fibroblast\n EVs (n=4)", "Testis control\n samples (n=4)", "Ovary control\n samples (n=4)"))
+
+
+plt = ggplot(fig1b_sncRNA_fam[!is.na(fig1b_sncRNA_fam$SampleCategoryGrouped),],
+              aes(x = SampleCategoryGrouped, y = value, fill=Category)) +
+ geom_col(position = "fill") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")) +
+  labs(
+    x = "Sample Group",
+    y = "Relative proportion of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA proportions per sample category",
+    fill = "Small ncRNA Family"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_proportion_by_updated_sample_category.pdf", device = "pdf", width = 16, height = 12, scale=1)
+plt
+```
+
+```{r}
+plt = fig1b_sncRNA_fam %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  filter(Category != "lnc_RNA") %>%
+  ggplot(
+              aes(x = SampleCategoryGrouped, y = value, fill=Category)) +
+ geom_col(position = "fill") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[2:8]) +
+  labs(
+    x = "Sample Group",
+    y = "Relative proportion of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA proportions per sample category",
+    fill = "Small ncRNA Family"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+master_plot_list$fig1$B = plt
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_proportion_by_updated_sample_category_sans_lncRNA.pdf", device = "pdf", width = 16, height = 12, scale=1)
+plt
+```
+
+
+
+```{r}
+# plot proportions for each batch
+plt = ggplot(fig1b_sncRNA_fam[!is.na(fig1b_sncRNA_fam$SampleCategoryGrouped),],
+              aes(x = SampleCategoryGrouped, y = value, fill=Category)) +
+ geom_col(position = "fill") +
+  facet_wrap(~Set, nrow = 1,scales = "free") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")) +
+  labs(
+    x = "Sample Group",
+    y = "Relative proportion of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA proportions per sample category",
+    fill = "Small ncRNA Family"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_proportion_by_updated_sample_category_split_by_batch.pdf", device = "pdf", width = 16, height = 12, scale=1)
+plt
+```
+
+```{r fig.height = 8, fig.width = 12, include=TRUE}
+plt = fig1b_sncRNA_fam %>%
+  filter(!is.na(SampleCategoryGrouped)) %>%
+  filter(Category != "lnc_RNA") %>%
+  ggplot(
+              aes(x = SampleCategoryGrouped, y = value, fill=Category)) +
+ geom_col(position = "fill") +
+  facet_wrap(~Set, nrow = 1,scales = "free") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[2:9]) +
+  labs(
+    x = "Sample Group",
+    y = "Relative proportion of small ncRNAs",
+    title = "Stacked Barchart of small ncRNA proportions per sample category",
+    fill = "Small ncRNA Family"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Stacked_barchart_sncRNA_family_proportion_by_updated_sample_category_sans_lncRNA_split_by_batch.pdf", device = "pdf", width = 16, height = 12, scale=1)
+master_plot_list$figS5$B = plt
+plt
+```
+
+
+#### Tissue-Specific Barcharts
+
+Following [this websites](https://www.arraystar.com/reviews/the-biases-of-using-tpm-in-small-rna-sequencing-data-analysis/) critique of TPM in small-RNA studies I used a per-million statistic similar to TPM that is more adapted to small-RNA.
+
+##### Testis
+
+###### TPM
+
+```{r fig.height = 4, fig.width = 9, include=TRUE}
+testis_samples_rna_families = melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),]
+testis_samples_rna_families = testis_samples_rna_families[testis_samples_rna_families$SampleCategoryGrouped %in% c("Testis control samples (n=4)", "Malignant GCTs (testicular origin) (n=4)"),]
+
+my_comparisons <- list(c("Testis control samples (n=4)", "Malignant GCTs (testicular origin) (n=4)"))
+
+# calculate transcripts per million
+testis_samples_rna_families = testis_samples_rna_families %>%
+    group_by(Row.names) %>%
+  summarise(SampleSums = sum(value)) %>%
+  merge(testis_samples_rna_families, by = "Row.names") %>%
+  mutate(TPM = (value/SampleSums) * 1000000)
+
+
+plt <- ggplot(testis_samples_rna_families, aes(y=TPM, fill=SampleCategoryGrouped, x=SampleCategoryGrouped)) +
+    geom_bar(stat="identity", position=position_dodge()) +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[4:5]) +
+  facet_wrap(~Category, nrow = 1) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = "TPM*",
+    title = "Barchart of small ncRNA counts in Testis tissue by small ncRNA family",
+    fill = "Sample",
+    caption = "* TPM here is defined as (Counts in family A for sample X / Total RNA counts in sample X) * 10^6"
+  ) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label="p.signif")
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Tumour_normal_sncRNA_family_TPM_testis.pdf", device = "pdf", width = 18, height = 8, scale=1)
+plt
+```
+
+###### Logcount
+
+```{r fig.height = 8, fig.width = 18, include=TRUE}
+testis_samples_rna_families = melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),]
+testis_samples_rna_families = testis_samples_rna_families[testis_samples_rna_families$SampleCategoryGrouped %in% c("Testis control samples (n=4)", "Malignant GCTs (testicular origin) (n=4)"),]
+
+testis_samples_rna_families$value = log2(testis_samples_rna_families$value + 1)
+
+my_comparisons <- list(c("Testis control samples (n=4)", "Malignant GCTs (testicular origin) (n=4)"))
+
+plt <- ggplot(testis_samples_rna_families, aes(y = value, fill=SampleCategoryGrouped,x=SampleCategoryGrouped)) +
+  geom_bar(position="dodge", stat="identity") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[4:5]) +
+  facet_wrap(~Category, nrow = 1) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = "log2 count",
+    title = "Barchart of small ncRNA counts in Testis tissue by small ncRNA family",
+    fill = "Sample"
+  ) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label="p.signif")
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Tumour_normal_sncRNA_family_counts_testis.pdf", device = "pdf", width = 18, height = 8, scale=1)
+plt
+```
+
+##### Ovary
+
+###### TPM
+
+```{r fig.height = 4, fig.width = 9, include=TRUE}
+ovary_samples_rna_families = melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),]
+ovary_samples_rna_families = ovary_samples_rna_families[ovary_samples_rna_families$SampleCategoryGrouped %in% c("Ovary control samples (n=4)", "Malignant GCTs (ovarian origin) (n=6)"),]
+
+my_comparisons <- list(c("Ovary control samples (n=4)", "Malignant GCTs (ovarian origin) (n=6)"))
+
+# calculate transcripts per million
+ovary_samples_rna_families = ovary_samples_rna_families %>%
+    dplyr::group_by(Row.names) %>%
+  dplyr::summarise(SampleSums = sum(value)) %>%
+  merge(ovary_samples_rna_families, by = "Row.names") %>%
+  dplyr::mutate(TPM = (value/SampleSums) * 1000000)
+
+
+plt <- ggplot(ovary_samples_rna_families, aes(y = TPM, fill = SampleCategoryGrouped, x = SampleCategoryGrouped)) +
+    geom_bar(stat="identity", position=position_dodge()) +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[2:3]) +
+  facet_wrap(~Category, nrow = 1) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = "TPM*",
+    title = "Barchart of small ncRNA counts in Ovary tissue by small ncRNA family",
+    fill = "Sample",
+    caption = "* TPM here is defined as (Counts in family A for sample X / Total RNA counts in sample X) * 10^6"
+  ) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label="p.signif")
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Tumour_normal_sncRNA_family_TPM_ovary.pdf", device = "pdf", width = 18, height = 8, scale=1)
+plt
+```
+
+###### Logcount
+
+```{r fig.height = 8, fig.width = 18, include=TRUE}
+ovary_samples_rna_families = melt_sncRNA_families[!is.na(melt_sncRNA_families$SampleCategoryGrouped),]
+ovary_samples_rna_families = ovary_samples_rna_families[ovary_samples_rna_families$SampleCategoryGrouped %in% c("Ovary control samples (n=4)", "Malignant GCTs (ovarian origin) (n=6)"),]
+
+ovary_samples_rna_families$value = log2(ovary_samples_rna_families$value + 1)
+
+my_comparisons <- list(c("Ovary control samples (n=4)", "Malignant GCTs (ovarian origin) (n=6)"))
+
+plt <- ggplot(ovary_samples_rna_families, aes(y = value, fill = SampleCategoryGrouped, x = SampleCategoryGrouped)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  theme_scientific() +
+  scale_fill_manual(values = pal("d3js")[2:3]) +
+  facet_wrap(~Category, nrow = 1) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    y = "log2 count",
+    title = "Barchart of small ncRNA counts in ovarian tissue by small ncRNA family",
+    fill = "Sample"
+  ) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label="p.signif")
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Tumour_normal_sncRNA_family_counts_ovary.pdf", device = "pdf", width = 18, height = 8, scale=1)
+plt
+```
+
+### Per tissue_type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_sncRNA_families, aes(x = Category, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~tissue_type) +
+  labs(
+    x = "Small ncRNA family",
+    y = "Count",
+    title = "Boxplot of small ncRNA counts by small ncRNA family by tissue type"
+  )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Boxplot_sncRNA_family_counts_tissue_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+#### Per tissue_type split by sample type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_sncRNA_families, aes(x = Category, y = value, color = Type)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~tissue_type) +
+  labs(
+    x = "Small ncRNA family",
+    y = "count",
+    title = "Boxplot of small ncRNA counts by small ncRNA family by tissue type, colored by sample type"
+  )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/sncRNA_Families/Boxplot_sncRNA_family_counts_tissue_type_and_sample_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+```{r}
+rm(sncRNA_families_df)
+```
+
+
+
+
+## Read Length
+
+```{r}
+if (!file.exists("rds/read_length_df.rds")) {
+  i <- 1
+  for (file in list.files(path = "Data/sncRNA_stats", pattern = "*.read_lengths.txt", full.names = T)) {
+    read_length_cell <- read.table(file, sep = "\t")
+    read_length_cell <- read_length_cell[c("V1")]
+    colnames(read_length_cell) <- c("read_length")
+
+    cell_name <- gsub(".read_lengths.txt", "", file)
+    cell_name <- gsub(".*/", "", cell_name)
+
+
+    read_length_cell <- as.data.frame(table(read_length_cell$read_length))
+    colnames(read_length_cell)[1] <- "read_length"
+    colnames(read_length_cell)[2] <- cell_name
+
+    if (i == 1) {
+      read_length_df <- read_length_cell
+    } else {
+      read_length_df <- merge(read_length_df, read_length_cell, by = "read_length", all = T)
+    }
+
+    i <- i + 1
+  }
+
+  read_length_df[is.na(read_length_df)] = 0
+  rm(i)
+  rm(file)
+  rm(read_length_cell)
+  gc()
+  saveRDS(read_length_df, file = "rds/read_length_df.rds")
+} else {
+  read_length_df <- readRDS("rds/read_length_df.rds")
+}
+```
+
+```{r}
+# remove all reads above 50nts as requested
+read_length_df = read_length_df %>%
+  mutate(read_length_num=as.numeric(as.character(read_length))) %>%
+  filter(read_length_num <= 50) %>%
+  select(-read_length_num)
+```
+
+
+```{r}
+# melt read_length_df to get long table
+melt_read_length_df = melt(read_length_df)
+melt_read_length_df = melt_read_length_df[melt_read_length_df$variable %in% testless_cells,]
+```
+
+```{r}
+# replace Row.names with table 1 sample identifiers
+melt_read_length_df <- melt_read_length_df %>%
+  rename(Row.names = variable) %>%
+  merge(testless_annot[, c("Row.names", "Sample_Number_Table_1")], by = "Row.names") %>%
+  rename(variable = Sample_Number_Table_1) %>%
+  select(-Row.names)
+```
+
+
+
+### Per Sample
+
+```{r fig.height = 4, fig.width = 9, include=TRUE}
+# size range for different ones below taken from Rounge et al.
+# https://molecular-cancer.biomedcentral.com/articles/10.1186/s12943-015-0411-4
+
+master_plot_list$figS3 = list()
+master_plot_list$figS4 = list()
+for (cell_name in unique(sort(melt_read_length_df$variable))) {
+  cell_read_lengths <- melt_read_length_df[melt_read_length_df$variable == cell_name, ]
+  bars_y <- as.integer(summary(cell_read_lengths$value)[2] + (0.5 * summary(cell_read_lengths$value)[2]) + summary(cell_read_lengths$value)[6])
+
+  plt <- ggplot(cell_read_lengths, aes(x = read_length, y = value)) +
+    geom_bar(stat = "identity") +
+    geom_bracket(
+      xmin = "18", xmax = "24", y.position = bars_y,
+      label = "miRNA range", type = "text", label.size = 3
+    ) +
+    geom_bracket(
+      xmin = "25", xmax = "31", y.position = bars_y,
+      label = "piRNA range", type = "text", label.size = 3
+    ) +
+    geom_bracket(
+      xmin = "32", xmax = "36", y.position = bars_y,
+      label = "tRNA range", type = "text", label.size = 3
+    ) +
+    theme(
+      aspect.ratio = 1/2,
+      text = element_text(size=11),
+      axis.text = element_text(size=12),
+      plot.caption = element_markdown()
+    ) +
+    labs(
+      x = "Read length",
+      y = "Number of reads",
+      caption = "*main RNA family for each size range as reported by Rounge et al. 2015*",
+      title = paste0(
+        "Distribution of read length across sample ", cell_name,
+        " (", testless_annot[testless_annot$Sample_Number_Table_1 == cell_name, "Type"], " - ",
+        testless_annot[testless_annot$Sample_Number_Table_1 == cell_name, "Hist_Type"], " - ",
+        testless_annot[testless_annot$Sample_Number_Table_1 == cell_name, "SampleCategoryGrouped"],
+        ")"
+      )
+    ) +
+    scale_x_discrete(breaks = cell_read_lengths$read_length[seq(1, length(cell_read_lengths$read_length), by = 2)])
+
+  plt_titleless = plt + labs(caption = "", x="",y="",
+                             title = paste0(cell_name, " (",
+                                            gsub(" *\\(n=.*?\\)$", "", testless_annot[testless_annot$Sample_Number_Table_1 == cell_name, "SampleCategoryGrouped"]),
+                                            ")"
+                                            )
+                             )
+
+  if (testless_annot$batch[testless_annot$Sample_Number_Table_1 == cell_name] == "original") {
+    master_plot_list$figs3[[as.character(cell_name)]] = as_grob(plt_titleless)
+  } else {
+    master_plot_list$figs4[[as.character(cell_name)]] = plt_titleless
+  }
+
+  ggsave(plt, filename = paste0("Plots/sncRNA_Distributions/read_lengths/Per_Sample/Boxplot_sncRNA_read_lengths_for_sample_", cell_name, ".pdf"), device = "pdf", width = 9, height = 4, scale=2)
+  print(plt)
+}
+```
+
+
+```{r}
+melt_read_length_df = melt_read_length_df %>% rename(Sample_Number_Table_1 = variable)
+melt_read_length_df = merge(melt_read_length_df, testless_annot[,c("Hist_Type", "Sample_Number_Table_1")], by = "Sample_Number_Table_1")
+# add sample Type annotation
+melt_read_length_df = merge(melt_read_length_df, testless_annot[,c("Type", "Sample_Number_Table_1")], by = "Sample_Number_Table_1")
+# add tissue_type annotation
+melt_read_length_df = merge(melt_read_length_df, testless_annot[,c("tissue_type", "Sample_Number_Table_1")], by = "Sample_Number_Table_1")
+# add additional grouped sample category annotation
+melt_read_length_df = merge(melt_read_length_df, testless_annot[,c("SampleCategoryGrouped", "Sample_Number_Table_1")], by = "Sample_Number_Table_1")
+```
+
+### Per Hist_type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_read_length_df, aes(x = read_length, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~Hist_Type) +
+  labs(
+      x = "Read length",
+      y = "Number of reads",
+      title = "Distribution of read length by Histological subtype"
+    )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_hist_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+# plot teratoma again as its so low it looks like there are no reads
+ggplot(melt_read_length_df[melt_read_length_df$Hist_Type == "Teratoma",], aes(x = read_length, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~Hist_Type) +
+  labs(
+      x = "Read length",
+      y = "Number of reads",
+      title = "Distribution of read length in Teratoma"
+    )
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_hist_type_teratoma.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+
+
+#### Per Hist_type split by sample type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_read_length_df, aes(x = read_length, y = value, color = Type)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~Hist_Type) +
+  labs(
+      x = "Read length",
+      y = "Number of reads",
+      title = "Distribution of read length by Histological subtype, colored by sample type"
+    )
+
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_hist_type_and_sample_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+### Per tissue_type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_read_length_df, aes(x = read_length, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~tissue_type) +
+  labs(
+    x = "Small ncRNA family",
+    y = "count",
+    title = "Boxplot of small ncRNA counts by small ncRNA family by tissue type"
+  )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_tissue_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+
+#### Per tissue_type split by sample type
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_read_length_df, aes(x = read_length, y = value, color = Type)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~tissue_type) +
+  labs(
+      x = "Read length",
+      y = "Number of reads",
+      title = "Distribution of read length by tissue type, colored by sample type"
+    )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_tissue_type_and_sample_type.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+### Per SampleCategoryGrouped
+
+```{r fig.height = 7, fig.width = 14, include=TRUE}
+plt <- ggplot(melt_read_length_df[!is.na(melt_read_length_df$SampleCategoryGrouped),], aes(x = read_length, y = value)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~SampleCategoryGrouped) +
+  labs(
+      x = "Read length",
+      y = "Number of reads",
+      title = "Distribution of read length by Sample category"
+    )
+
+ggsave(plt, filename = "Plots/sncRNA_Distributions/read_lengths/Boxplot_sncRNA_read_lengths_for_updated_sample_category.pdf", device = "pdf", width = 14, height = 7, scale=2)
+plt
+```
+
+
+
+# Read Depth
+
+```{r}
+readdepth_df = read.table("Data/sncRNA_stats/read_depth.tsv", sep = "\t", col.names = c("filename","total_reads","aligned_reads"))
+readdepth_df$filename = gsub("^.*/", "", readdepth_df$filename)
+readdepth_df$filename = gsub("Aligned.sortedByCoord.out.unfilt.bam$", "", readdepth_df$filename)
+readdepth_df$filename = gsub("Aligned.sortedByCoord.out.unfilt.bam$", "", readdepth_df$filename)
+readdepth_df$filename = gsub("_S[0-9]+_merged_R1_001_trimmed.4.clean.fq.unfilt.bam$", "", readdepth_df$filename)
+```
+
+```{r}
+readdepth_df = readdepth_df %>%
+  mutate(Row.names = filename) %>%
+  merge(annot_table[,c("Row.names","batch","Run_number")], by = "Row.names") %>%
+  select(-Row.names)
+
+readdepth_df$batch = as.character(readdepth_df$batch)
+readdepth_df$batch[readdepth_df$batch == "original"] = "Set-1"
+readdepth_df$batch[readdepth_df$batch == "new"] = "Set-2"
+```
+
+## Batch
+
+```{r fig.height = 6, fig.width = 6, include=TRUE}
+five38_color_range = colorRampPalette(colors = pal("five38"))
+p_meds <- plyr::ddply(readdepth_df, plyr::.(batch), summarise, med = median(total_reads))
+
+ggplot(readdepth_df, aes(x=batch,fill=batch, y=total_reads)) +
+  geom_boxplot() +
+  coord_trans(y = "log2") +
+ geom_text(data = p_meds, aes(x = batch, y = med, label = paste0("median: ",med)),
+              size = 3, vjust = -0.5) +
+  theme_scientific() +
+  scale_fill_manual(values = rev(five38_color_range(6))) +
+  labs(
+    x = "Batch",
+    y = "total read counts",
+    title = "Boxplot of total read counts per sample for each batch",
+    fill = "Batch"
+  )
+ggsave("Plots/sncRNA_Distributions/Boxplot_read_depth_batch.pdf", device = "pdf", width = 6, height = 6)
+```
+
+The median number of reads in bams from Set-1 is `r p_meds$med[1]` (range: `r min(readdepth_df$total_reads[readdepth_df$batch == "Set-1"])`-`r max(readdepth_df$total_reads[readdepth_df$batch == "Set-1"])`, sd: `r sd(readdepth_df$total_reads[readdepth_df$batch == "Set-1"])`).
+This is substantially lower than the median for Set-2 `r p_meds$med[2]` (range: `r min(readdepth_df$total_reads[readdepth_df$batch == "Set-2"])`-`r max(readdepth_df$total_reads[readdepth_df$batch == "Set-2"])`, sd: `r sd(readdepth_df$total_reads[readdepth_df$batch == "Set-2"])`).
+
+## Test/Final Lane
+
+```{r fig.height = 6, fig.width = 6, include=TRUE}
+five38_color_range = colorRampPalette(colors = pal("five38"))
+readdepth_df_lane = readdepth_df %>% filter(!is.na(Run_number))
+p_meds <- plyr::ddply(readdepth_df_lane, plyr::.(Run_number), summarise, med = median(total_reads))
+
+ggplot(readdepth_df_lane, aes(x=Run_number, fill=Run_number, y=total_reads)) +
+  geom_boxplot() +
+  coord_trans(y = "log2") +
+ geom_text(data = p_meds, aes(x = Run_number, y = med, label = paste0("median: ",med)),
+              size = 3, vjust = -0.5) +
+  theme_scientific() +
+  scale_fill_manual(values = rev(five38_color_range(6))) +
+  labs(
+    x = "Lane",
+    y = "Total read counts",
+    title = "Boxplot of total read counts per sample for each lane",
+    fill = "Lane"
+  )
+ggsave("Plots/sncRNA_Distributions/Boxplot_read_depth_test_final_lane.pdf", device = "pdf", width = 6, height = 6)
+```
+
+The median number of reads in bams from test-lane is `r p_meds$med[2]` (range: `r min(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "test-lane"])`-`r max(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "test-lane"])`, sd: `r sd(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "test-lane"])`).
+This is substantially lower than the median for final-lane `r p_meds$med[1]` (range: `r min(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "final-lane"])`-`r max(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "final-lane"])`, sd: `r sd(readdepth_df_lane$total_reads[readdepth_df_lane$Run_number == "final-lane"])`).
+

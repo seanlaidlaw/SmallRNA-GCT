@@ -1,0 +1,102 @@
+# piRBase Subsets
+
+
+## Subset piRNA
+```{bash}
+# convert fasta format to a column format for filtered_piRbase.fa that I found on farm used for miRanda piRNA/mRNA alignment
+cat filtered_piRbase.fa | perl -pe 's/^>(piR.*)\n/\1\t/g' | grep -v '^$' > filtered_piRbase_sequences.fa
+```
+
+```{r}
+piRBase = read.table("filtered_piRbase_sequences.fa", sep = "\t", header = F)
+colnames(piRBase) = c("name", "sequence")
+```
+
+
+
+## Subset to all-DE (1121)
+
+```{r}
+de_file = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Healthy v Tumours.tsv$", full.names = T)
+de_table = read.table(de_file[1], sep = "\t") %>% filter(padj < 0.05) %>% filter(abs(log2FoldChange) > 1)
+de_table$name = rownames(de_table)
+rm(de_file)
+```
+
+```{r}
+DE_filtered_pirbase = merge(piRBase, de_table, by = "name")
+DE_filtered_pirbase = DE_filtered_pirbase %>% select(name, sequence)
+```
+
+```{r}
+write.table(DE_filtered_pirbase, file = "Data/filtered_DE_piRBase.tsv", sep = "\t", row.names = F)
+```
+
+
+## Subset to ME-associated DE (166)
+
+```{r}
+de_file = list.files(path = "Plots/piRNA-repeat-targets/",pattern = "Healthy v Tumour DE piRNA overlap with RepeatMasker.xlsx$", full.names = T)
+mobile_DE = read_excel(de_file, sheet = 1)
+mobile_DEs = mobile_DE %>% pull(name)
+rm(de_file)
+```
+
+```{r}
+ME_filtered_pirbase = piRBase %>% filter(name %in% mobile_DEs)
+write.table(ME_filtered_pirbase, file = "Data/ME_filtered_piRBase.tsv", sep = "\t", row.names = F)
+```
+
+
+
+## Subset to non-ME-associated DE (955)
+
+```{r}
+de_file = list.files(path = "Plots/piRNA-repeat-targets/",pattern = "Healthy v Tumour DE piRNA overlap with RepeatMasker.xlsx$", full.names = T)
+mobile_DE = read_excel(de_file, sheet = 1)
+mobile_DEs = mobile_DE %>% pull(name)
+rm(de_file)
+```
+
+```{r}
+non_mobile_DEs = DE_filtered_pirbase %>% filter(!(name %in% mobile_DEs))
+write.table(non_mobile_DEs, file = "Data/non_ME_filtered_piRBase.tsv", sep = "\t", row.names = F)
+```
+
+
+# miRBase matches
+
+```{r}
+de_file = list.files(path = "Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "Healthy v Tumours.xlsx$", full.names = T)
+piRNA_table = readxl::read_excel(de_file, sheet = 1)
+
+miRNA_overlapping = read.table("Data/piRNA_miRNA_matches/piRNA_miRNA_matches.cut.tsv", header = F)
+miRNA_overlapping$miRNA_mismatch = "yes"
+colnames(miRNA_overlapping) = c("...1", "Potential miRNA match", "Evidence of potential miRNA match")
+miRNA_overlapping
+```
+
+```{r}
+miRNA_overlapping_flattened = data.frame(row.names = unique(miRNA_overlapping$...1))
+miRNA_overlapping_flattened$`Evidence of potential miRNA match` = "yes"
+miRNA_overlapping_flattened$`Potential miRNA match` = NA
+for (pi in unique(miRNA_overlapping$...1)) {
+  subsetdf = miRNA_overlapping[miRNA_overlapping$...1 == pi,]
+  mirs = subsetdf$`Potential miRNA match`
+  miRNA_overlapping_flattened[pi, "Potential miRNA match"] = paste(mirs, collapse=" ") # convert vector to string
+}
+```
+
+
+```{r}
+piRNA_table_mir_matches = merge(piRNA_table, miRNA_overlapping_flattened, by = "...1", all.x = T)
+piRNA_table_mir_matches <- piRNA_table_mir_matches[order(piRNA_table_mir_matches$padj), ]
+piRNA_table_mir_matches$`Evidence of potential miRNA match`[is.na(piRNA_table_mir_matches$`Evidence of potential miRNA match`)] = ""
+piRNA_table_mir_matches$`Potential miRNA match`[is.na(piRNA_table_mir_matches$`Potential miRNA match`)] = ""
+rownames(piRNA_table_mir_matches) = piRNA_table_mir_matches$...1
+piRNA_table_mir_matches$...1 = NULL
+```
+```{r}
+write.table(piRNA_table_mir_matches, file = "Data/piRNA_miRNA_matches/DE_piRNA_with_miRNA_column.tsv", sep = "\t", col.names = T, row.names = T)
+```
+

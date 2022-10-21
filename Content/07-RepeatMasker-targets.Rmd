@@ -1,0 +1,337 @@
+# RepeatMasker Targets
+
+```{r}
+if (!file.exists("Data/Repeats_piRbase/repeats_overlap_piRbase.tsv")) {
+
+  # download repeat related piRNA for hg19 from piRBase
+  pirbase_repeat_urls <- c(
+    "http://www.regulatoryrna.org/database/piRNA/download/archive/v1.0/rep/piR_hsa_LINE.txt.gz",
+    "http://www.regulatoryrna.org/database/piRNA/download/archive/v1.0/rep/piR_hsa_LTR.txt.gz",
+    "http://www.regulatoryrna.org/database/piRNA/download/archive/v1.0/rep/piR_hsa_SINE.txt.gz",
+    "http://www.regulatoryrna.org/database/piRNA/download/archive/v1.0/rep/piR_hsa_Satellite.txt.gz"
+  )
+
+  i <- 0
+  for (url in pirbase_repeat_urls) {
+    basename <- gsub(".*/", "", url)
+
+    downloaded_file <- paste0("Data/Repeats_piRbase/", basename)
+    download.file(url = url, destfile = downloaded_file)
+
+    x <- read.table(downloaded_file, header = T, sep = "\t", stringsAsFactors = F)
+    x$RepeatType <- gsub("^piR_hsa_", "", basename)
+    x$RepeatType <- gsub(".txt.gz$", "", x$RepeatType)
+
+    # append each counts file to one another to make a matrix
+    if (i == 0) {
+      repeats_piRBase_matrix <- x
+    } else {
+      repeats_piRBase_matrix <- rbind(repeats_piRBase_matrix, x)
+    }
+
+    i <- i + 1
+  }
+  write.table(repeats_piRBase_matrix, file = "Data/Repeats_piRbase/repeats_overlap_piRbase.tsv", sep = "\t", col.names = T, row.names = F)
+
+  rm(pirbase_repeat_urls)
+  rm(basename)
+  rm(downloaded_file)
+  rm(x)
+  rm(i)
+} else {
+  repeats_piRBase_matrix <- read.table("Data/Repeats_piRbase/repeats_overlap_piRbase.tsv", sep = "\t", header = T)
+}
+```
+
+
+
+# DE Repeat-piRNAs
+
+```{r}
+# use this one and see if it totals same number of piRNAs as the DEG found
+# we use the list.files method to avoid the problems of the numbers changeing
+tsv_file = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Healthy v Tumours.tsv$", full.names = T)
+
+all_healthy_all_tumour = read.table(tsv_file)
+all_healthy_all_tumour = all_healthy_all_tumour[!is.na(all_healthy_all_tumour$padj),]
+all_healthy_all_tumour = all_healthy_all_tumour[all_healthy_all_tumour$padj<0.05,]
+
+DE_healthy_tumour = all_healthy_all_tumour[abs(all_healthy_all_tumour$log2FoldChange) > 1,]
+DE_upreg_healthy_tumour = DE_healthy_tumour[DE_healthy_tumour$log2FoldChange > 1,]
+DE_downreg_healthy_tumour = DE_healthy_tumour[DE_healthy_tumour$log2FoldChange < 1,]
+```
+
+
+```{r}
+DE_healthy_tumour_names = rownames(DE_healthy_tumour)[rownames(DE_healthy_tumour) %in% repeats_piRBase_matrix$name]
+DE_upreg_healthy_tumour_names = rownames(DE_upreg_healthy_tumour)[rownames(DE_upreg_healthy_tumour) %in% repeats_piRBase_matrix$name]
+DE_downreg_healthy_tumour_names = rownames(DE_downreg_healthy_tumour)[rownames(DE_downreg_healthy_tumour) %in% repeats_piRBase_matrix$name]
+
+tumour_DE_ME = repeats_piRBase_matrix[repeats_piRBase_matrix$name %in% DE_healthy_tumour_names,]
+tumour_downreg_ME = repeats_piRBase_matrix[repeats_piRBase_matrix$name %in% DE_upreg_healthy_tumour_names,]
+tumour_upreg_ME = repeats_piRBase_matrix[repeats_piRBase_matrix$name %in% DE_downreg_healthy_tumour_names,]
+
+
+excel_filename <- paste0("Plots/piRNA-repeat-targets/Healthy v Tumour DE piRNA overlap with RepeatMasker.xlsx")
+WriteXLS(x=c("tumour_DE_ME", "tumour_downreg_ME", "tumour_upreg_ME"),
+  SheetName = c("ME_overlap_DE_piRNAs", "ME_overlap_tumour_downreg", "ME_overlap_tumour_upreg"),
+  ExcelFileName = excel_filename,
+  row.names = T
+)
+```
+
+
+
+# GCT Repeat-piRNAs
+
+```{r message=FALSE}
+# deactivate logging for VennDiagram to avoid workind directory filling with log files
+futile.logger::flog.threshold(futile.logger::ERROR, name = "VennDiagramLogger")
+
+
+repeats_in_dataset = repeats_piRBase_matrix[repeats_piRBase_matrix$name %in% rownames(pirna_counts),]
+repeats_in_dataset$HistType = "Dataset"
+repeats_in_dataset = merge(repeats_in_dataset[,c("name","HistType")], repeats_piRBase_matrix[,c("name", "RepeatType")], by = "name")
+```
+
+All `r length(repeats_in_dataset$name)` piRNAs that are reported to overlap an ME element position in piRbase are found in our dataset. Of these, `r table(repeats_in_dataset$name %in% unique(as.vector(c(na.omit(Healthy_specific_DE$...1), na.omit(Tumour_specific_DE$...1)))))[[2]]` are present in our list of differentially expressed piRNAs between healthy and tumour, with nearly all being downregulated in tumour compared to the gonadal controls.
+
+```{r fig.width=11, fig.height=7}
+venn_list <- list(
+tumour_markers = unique(as.vector(c(na.omit(Healthy_specific_DE$...1), na.omit(Tumour_specific_DE$...1)))),
+Mobile_Elements = repeats_in_dataset$name
+)
+
+
+master_plot_list$fig5$A = venn_list
+
+plt <- venn.diagram(venn_list,
+  height = 800, width = 900,
+  filename = NULL,
+  cex=2,
+  cat.cex = 2.3, cat.default.pos = "text", fontfamily = "sans", cat.fontfamily = "sans",
+  cat.col = "black",
+  fill = c("#D3D3D3","#808080"),
+  alpha = c(0.9,0.9),
+  main.fontfamily = "sans",
+  category.names = c("Non-mobile element (non-ME)", "Mobile elements (MEs)"),
+  main.cex = 2.2,
+  cat.pos = 0,
+  imagetype = "svg"
+)
+{
+  ggsave(as_ggplot(plt),
+         filename = "Plots/piRNA-repeat-targets/Venn_diagram_of_piRNAs_overlapping_ME_in_our_dataset.pdf",
+         title = "Proportion of ME-overlapping piRNAs in dataset and in healthy-tumour DE list",
+         width = 11, height = 7, scale=2)
+
+  grid.newpage()
+  grid.draw(plt)
+}
+```
+
+
+
+# Repeat-piRNA Abundance
+
+In fact, looking at the counts of ME-overlapping piRNAs in different samples we observe that most of these are detected in the gonadal control samples but few are even expressed in the GCT samples.
+
+```{r fig.height=3, fig.width=6}
+gc_samples = testless_annot$Row.names[testless_annot$Hist_Type %in% c("Gonadal control")]
+gc_counts = pirna_counts[,gc_samples]
+gc_counts = gc_counts[rowSums(gc_counts) > 0,]
+repeats_gc = repeats_in_dataset[repeats_in_dataset$name %in% rownames(gc_counts),]
+repeats_gc$Hist_Type = "Gonadal control"
+
+# tf_samples = testless_annot$Row.names[testless_annot$Hist_Type %in% c("Testis fibroblasts")]
+# tf_counts = pirna_counts[,tf_samples]
+# tf_counts = tf_counts[rowSums(tf_counts) > 0,]
+# repeats_tf = repeats_in_dataset[repeats_in_dataset$name %in% rownames(tf_counts),]
+# repeats_tf$Hist_Type = "Testis fibroblasts"
+# repeats_tf$DE_v_GC = NA
+
+yst_samples = testless_annot$Row.names[testless_annot$Hist_Type %in% c("Yolk sac tumour")]
+yst_counts = pirna_counts[,yst_samples]
+yst_counts = yst_counts[rowSums(yst_counts) > 0,]
+repeats_yst = repeats_in_dataset[repeats_in_dataset$name %in% rownames(yst_counts),]
+repeats_yst$Hist_Type = "Yolk sac tumour"
+
+
+ec_samples = testless_annot$Row.names[testless_annot$Hist_Type %in% c("Embryonal carcinoma")]
+ec_counts = pirna_counts[,ec_samples]
+ec_counts = ec_counts[rowSums(ec_counts) > 0,]
+repeats_ec = repeats_in_dataset[repeats_in_dataset$name %in% rownames(ec_counts),]
+repeats_ec$Hist_Type = "Embryonal carcinoma"
+
+
+sem_samples = testless_annot$Row.names[testless_annot$Hist_Type %in% c("Seminoma/Germinoma")]
+sem_counts = pirna_counts[,sem_samples]
+sem_counts = sem_counts[rowSums(sem_counts) > 0,]
+repeats_sem = repeats_in_dataset[repeats_in_dataset$name %in% rownames(sem_counts),]
+repeats_sem$Hist_Type = "Seminoma/Germinoma"
+
+
+# repeats_gct = rbind(repeats_gc, repeats_tf, repeats_yst, repeats_ec, repeats_sem)
+repeats_gct = rbind(repeats_gc, repeats_yst, repeats_ec, repeats_sem)
+repeats_gct$Hist_Type = factor(repeats_gct$Hist_Type, levels=c("Seminoma/Germinoma", "Yolk sac tumour", "Embryonal carcinoma", "Gonadal control"))
+
+plt <- ggplot(
+  repeats_gct,
+  aes(x = Hist_Type, fill = RepeatType)) +
+  geom_bar() +
+  theme_scientific() +
+  scale_fill_manual(values = pal("five38")) +
+  labs(
+    title = "Number of detected ME-overlapping piRNAs by histological subtype",
+    x = "Histological subtype",
+    y = "Count of ME-overlapping piRNAs in samples",
+    fill = "Repeat type"
+  )
+
+ggsave(plt,
+       filename = "Plots/piRNA-repeat-targets/Detected_ME-overlapping_piRNAs_by_Hist_Type.pdf",
+       width = 6, height = 3, scale=2)
+
+master_plot_list$fig5$B = plt
+
+plt
+```
+
+
+Although the previous plot might be due to differences between the tissues and the cell-lines so We can even look at it by tissue
+
+```{r fig.height=3, fig.width=6}
+ovary_gc_samples = testless_annot$Row.names[testless_annot$SampleCategoryGrouped %in% c("Ovary control samples (n=4)")]
+ovary_gc_counts = pirna_counts[,ovary_gc_samples]
+ovary_gc_counts = ovary_gc_counts[rowSums(ovary_gc_counts) > 0,]
+repeats_ovary_gc = repeats_in_dataset[repeats_in_dataset$name %in% rownames(ovary_gc_counts),]
+repeats_ovary_gc$SampleCategoryGrouped = "Ovary control samples (n=4)"
+
+ovary_gct_samples = testless_annot$Row.names[testless_annot$SampleCategoryGrouped %in% c("Malignant GCTs (ovarian origin) (n=6)")]
+ovary_gct_counts = pirna_counts[,ovary_gct_samples]
+ovary_gct_counts = ovary_gct_counts[rowSums(ovary_gct_counts) > 0,]
+repeats_ovary_gct = repeats_in_dataset[repeats_in_dataset$name %in% rownames(ovary_gct_counts), ]
+repeats_ovary_gct$SampleCategoryGrouped = "Malignant GCTs (ovarian origin) (n=6)"
+
+
+repeats_gct = rbind(repeats_ovary_gc, repeats_ovary_gct)
+
+plt <- ggplot(
+  repeats_gct,
+  aes(x = SampleCategoryGrouped, fill = RepeatType)) +
+  geom_bar() +
+  theme_scientific() +
+  scale_fill_manual(values = pal("five38")) +
+  labs(
+    title = "Number of detected ME-overlapping piRNAs in Ovary tissue samples",
+    x = "Anatomical origin",
+    y = "Count of ME-overlapping piRNAs in samples",
+    fill = "Repeat type"
+  )
+
+ggsave(plt,
+       filename = "Plots/piRNA-repeat-targets/Detected_ME-overlapping_piRNAs_in_ovary.pdf",
+       width = 5, height = 3, scale=2)
+
+master_plot_list$fig5$C2 = plt
+
+plt
+```
+
+```{r fig.height=3, fig.width=6}
+testis_gc_samples = testless_annot$Row.names[testless_annot$SampleCategoryGrouped %in% c("Testis control samples (n=4)")]
+testis_gc_counts = pirna_counts[,testis_gc_samples]
+testis_gc_counts = testis_gc_counts[rowSums(testis_gc_counts) > 0,]
+repeats_testis_gc = repeats_in_dataset[repeats_in_dataset$name %in% rownames(testis_gc_counts),]
+repeats_testis_gc$SampleCategoryGrouped = "Testis control samples (n=4)"
+
+testis_gct_samples = testless_annot$Row.names[testless_annot$SampleCategoryGrouped %in% c("Malignant GCTs (testicular origin) (n=4)")]
+testis_gct_counts = pirna_counts[,testis_gct_samples]
+testis_gct_counts = testis_gct_counts[rowSums(testis_gct_counts) > 0,]
+repeats_testis_gct = repeats_in_dataset[repeats_in_dataset$name %in% rownames(testis_gct_counts), ]
+repeats_testis_gct$SampleCategoryGrouped = "Malignant GCTs (testicular origin) (n=4)"
+
+
+repeats_gct = rbind(repeats_testis_gc, repeats_testis_gct)
+
+plt <- ggplot(
+  repeats_gct,
+  aes(x = SampleCategoryGrouped, fill = RepeatType)) +
+  geom_bar() +
+  theme_scientific() +
+  scale_fill_manual(values = pal("five38")) +
+  labs(
+    title = "Number of detected ME-overlapping piRNAs in Testis tissue samples",
+    x = "Anatomical origin",
+    y = "Count of ME-overlapping piRNAs in samples",
+    fill = "Repeat type"
+  )
+
+ggsave(plt,
+       filename = "Plots/piRNA-repeat-targets/Detected_ME-overlapping_piRNAs_in_testis.pdf",
+       width = 5, height = 3, scale=2)
+
+master_plot_list$fig5$C1 = plt
+
+plt
+```
+
+
+
+# DE by GCT subtype
+
+## Hist_Type
+
+```{r fig.width=5.5, fig.height=3.5}
+tsv_file = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Yolk sac tumour v Gonadal control.tsv$", full.names = T)
+GC_YST = read.table(tsv_file, header = T, sep = "\t")
+
+tsv_file = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Embryonal carcinoma v Gonadal control.tsv$", full.names = T)
+GC_EC = read.table(tsv_file, header = T, sep = "\t")
+
+tsv_file = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table \\(unfiltered\\) Seminoma, Germinoma v Gonadal control.tsv$", full.names = T)
+GC_Sem = read.table(tsv_file, header = T, sep = "\t")
+rm(tsv_file)
+
+
+# melt the matrices
+GC_YST$pirna_id = rownames(GC_YST)
+colnames(GC_YST)[2] = "YST"
+GC_YST = melt(GC_YST[,c("YST","pirna_id"), drop=F])
+
+GC_Sem$pirna_id = rownames(GC_Sem)
+colnames(GC_Sem)[2] = "Sem"
+GC_Sem = melt(GC_Sem[,c("Sem","pirna_id"), drop=F])
+
+GC_EC$pirna_id = rownames(GC_EC)
+colnames(GC_EC)[2] = "EC"
+GC_EC = melt(GC_EC[,c("EC","pirna_id"), drop=F])
+
+melt_matrix = rbind(GC_YST, GC_Sem, GC_EC)
+repeats_in_DE = repeats_in_dataset[repeats_in_dataset$name %in% melt_matrix$pirna_id,] %>%
+  mutate(pirna_id = name) %>%
+  select(-name)
+
+melt_matrix = merge(melt_matrix, repeats_in_DE, by = "pirna_id", all=T)
+melt_matrix = melt_matrix[!is.na(melt_matrix$RepeatType),]
+
+plt <- ggplot(
+  melt_matrix,
+  aes(y = RepeatType, x = -value, fill = RepeatType)) +
+  geom_boxplot() +
+  theme_scientific() +
+  scale_fill_manual(values = pal("five38")) +
+  facet_wrap(~variable) +
+  labs(
+    title = "Downregulation of ME-overlapping piRNAs in Malignant GCT compared to healthy Gonadal Controls",
+    x = "Log2FC of ME-overlapping piRNAs",
+    y = "Repeat type",
+    fill = "Repeat type"
+  )
+
+ggsave(plt,
+       filename = "Plots/piRNA-repeat-targets/Downregulation_of_ME-overlapping_piRNAs_in_GCT.pdf",
+       width = 5.5, height = 3.5, scale=2)
+
+plt
+```

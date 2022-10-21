@@ -1,0 +1,1142 @@
+# Identify piRNA Markers
+
+
+
+## Tumour v Healthy {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Tumours"
+Aint = as.integer(rownames(annot_table[(annot_table$malignantVs.normal == "Malignant" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "Healthy"
+Bint = as.integer(rownames(annot_table[(annot_table$malignantVs.normal == "Non-malignant" & annot_table$Row.names %in% testless_cells),]))
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+master_plot_list$fig3$A = unserialize(deseq_out$volcano)
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+Tumour_specific_DE = read_excel(path = deseq_out$excel)
+datatable(Tumour_specific_DE)
+```
+
+Stats for manuscript:
+```{r}
+Tumour_specific_DE_filtered = Tumour_specific_DE[!is.na(Tumour_specific_DE$padj),]
+Tumour_specific_DE_filtered = Tumour_specific_DE_filtered[Tumour_specific_DE_filtered$padj < 0.05,]
+Tumour_specific_DE_filtered = Tumour_specific_DE_filtered[abs(Tumour_specific_DE_filtered$log2FoldChange) > 1,]
+```
+
+We have `r nrow(Tumour_specific_DE_filtered)` differentially expressed piRNAs between the Healthy and the Malignant samples. Of these `r table(Tumour_specific_DE_filtered$log2FoldChange > 0)[1]` are upregulated in malignant samples and  `r table(Tumour_specific_DE_filtered$log2FoldChange > 0)[2]` are downregulated when compared to healthy.
+
+
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### Heatmap {-}
+
+```{r}
+cells_to_use = annot_table$Row.names[c(Aint,Bint)]
+# cells_to_use = cells_to_use[cells_to_use %in% annot_table$Row.names[annot_table$batch == "new"]]
+count_data = pirna_counts[,colnames(pirna_counts) %in% cells_to_use ]+1
+count_data = count_data[rowMeans(count_data) > 10,]
+colnames(count_data) = testless_annot$Sample_Number_Table_1[testless_annot$Row.names %in% colnames(count_data)]
+
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = count_data,
+										  colData = annot_table[annot_table$Sample_Number_Table_1 %in% colnames(count_data),],
+										  design = ~ Hist_Type + batch))
+
+# Normalise counts with variance stabilising transfromation
+vsd <- vst(deseq_matrix_raw, nsub=50)
+
+# Remove batch effect
+pirna_norm_counts <- assay(vsd)
+pirna_norm_counts <- limma::removeBatchEffect(pirna_norm_counts, vsd$batch)
+assay(vsd) <- pirna_norm_counts
+
+pirna_norm_counts <- assay(vsd)
+dim(pirna_norm_counts)
+```
+
+
+
+#### All 1121 DE
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+# heatmap_mat = heatmap_mat[1:50,]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot,
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat,
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = annot_table$Sample_Number_Table_1[annot_table$Sample_Number_Table_1 %in% colnames(heatmap_mat)],
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+
+pdf(paste0(output_folder, "Heatmap_all_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 105)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+
+
+#### Top 50 DE
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+heatmap_mat = heatmap_mat[1:50,]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot,
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat,
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = annot_table$Sample_Number_Table_1[annot_table$Sample_Number_Table_1 %in% colnames(heatmap_mat)],
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+master_plot_list$fig3$C <- plt
+
+pdf(paste0(output_folder, "Heatmap_top50_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 20)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+
+#### Sans-TF top-100
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+heatmap_mat = heatmap_mat[1:100,]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot_df = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot_df = heatmap_top_annot_df %>% filter(Hist_Type != "Testis fibroblasts")
+
+heatmap_top_annot_df = heatmap_top_annot_df[heatmap_top_annot_df$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type","Sample_Number_Table_1") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot_df[,c("Sample Type", "Key")],
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat[,colnames(heatmap_mat) %in% heatmap_top_annot_df$Sample_Number_Table_1],
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = heatmap_top_annot_df$Sample_Number_Table_1,
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+
+pdf(paste0(output_folder, "Heatmap_top100_sans_TF_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 20)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+
+#### Sans-TF top-50
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+heatmap_mat = heatmap_mat[1:50,]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot_df = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot_df = heatmap_top_annot_df %>% filter(Hist_Type != "Testis fibroblasts")
+
+heatmap_top_annot_df = heatmap_top_annot_df[heatmap_top_annot_df$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type","Sample_Number_Table_1") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot_df[,c("Sample Type", "Key")],
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat[,colnames(heatmap_mat) %in% heatmap_top_annot_df$Sample_Number_Table_1],
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = heatmap_top_annot_df$Sample_Number_Table_1,
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+
+pdf(paste0(output_folder, "Heatmap_top50_sans_TF_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 20)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+#### Sans-TF top-50 sans-CL
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+heatmap_mat = heatmap_mat[1:50,]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot_df = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot_df = heatmap_top_annot_df %>% filter(Hist_Type != "Testis fibroblasts") %>% filter(Type != "Cell line")
+
+heatmap_top_annot_df = heatmap_top_annot_df[heatmap_top_annot_df$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type","Sample_Number_Table_1") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot_df[,c("Sample Type", "Key")],
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat[,colnames(heatmap_mat) %in% heatmap_top_annot_df$Sample_Number_Table_1],
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = heatmap_top_annot_df$Sample_Number_Table_1,
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+
+pdf(paste0(output_folder, "Heatmap_top50_sans_TF_sans_CL_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 20)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+
+#### p<1e-05
+
+```{r}
+deseq_results = list.files("Plots/piRNA DEA/GCT-Subtype Specifics/", pattern = "DE results table Healthy v Tumours.xlsx$", full.names = T)
+malig_nonmalig_DE = read_excel(path = deseq_results[1])
+malig_nonmalig_DE = malig_nonmalig_DE %>%
+  filter(padj < 1e-05)
+
+heatmap_mat = malig_nonmalig_DE
+heatmap_mat = heatmap_mat[heatmap_mat$...1 %in% rownames(pirna_norm_counts),]
+heatmap_mat <- pirna_norm_counts[heatmap_mat$...1[heatmap_mat$...1 %in% rownames(pirna_counts)],]
+
+
+heatmap_top_annot = annot_table %>% rename(Sample_Group = SampleCategoryGrouped)
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Sample_Number_Table_1 %in% colnames(heatmap_mat),c("Type", "Hist_Type") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+heatmap_top_annot = HeatmapAnnotation(
+  df = heatmap_top_annot,
+  col = cmplxhmapcols,
+   annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+)
+
+
+plt <- grid.grabExpr(
+  draw(
+  Heatmap(heatmap_mat,
+    name = "expression",
+    column_names_gp = gpar(fontsize = 11),
+    column_labels = annot_table$Sample_Number_Table_1[annot_table$Sample_Number_Table_1 %in% colnames(heatmap_mat)],
+    row_names_gp = gpar(fontsize = 10),
+    top_annotation = heatmap_top_annot,
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  )
+, annotation_legend_side = "bottom"
+))
+
+pdf(paste0(output_folder, "Heatmap_p1e-05_healthy_tumour_DE_piRNAs.pdf"), width = 20, height = 30)
+grid.draw(plt)
+dev.off()
+
+grid.draw(plt)
+```
+
+
+## YST Specific
+
+### Tumour Comparison {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Yolk sac tumour"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Yolk sac tumour" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "Other Tumours"
+Bint = as.integer(rownames(annot_table[(annot_table$malignantVs.normal == "Malignant" & annot_table$Row.names %in% testless_cells),]))
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+YST_specific_DE = read_excel(path = deseq_out$excel)
+YST_specific_DE_abs = read_excel(path = deseq_out$excel)
+datatable(YST_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+### All Comparison {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Yolk sac tumour"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Yolk sac tumour" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "All others"
+Bint = rownames(annot_table)[annot_table$Row.names %in% testless_cells]
+Bint = as.integer(Bint)
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+only_YST_specific_intermed = deseq_out$deseq_intermediates
+only_YST_specific_DE = read_excel(path = deseq_out$excel)
+only_YST_specific_DE = only_YST_specific_DE[only_YST_specific_DE$log2FoldChange > 1,]
+datatable(only_YST_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+## EC Specific
+
+### Tumour Comparison {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Embryonal carcinoma"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Embryonal carcinoma" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "Other Tumours"
+Bint = as.integer(rownames(annot_table[(annot_table$malignantVs.normal == "Malignant" & annot_table$Row.names %in% testless_cells),]))
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+EC_specific_DE = read_excel(path = deseq_out$excel)
+EC_specific_DE_abs = read_excel(path = deseq_out$excel)
+datatable(EC_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+### All Comparisons {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "EC"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Embryonal carcinoma" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "All others"
+Bint = rownames(annot_table)[annot_table$Row.names %in% testless_cells]
+Bint = as.integer(Bint)
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+only_EC_specific_intermed = deseq_out$deseq_intermediates
+only_EC_specific_DE = read_excel(path = deseq_out$excel)
+only_EC_specific_DE = only_EC_specific_DE[only_EC_specific_DE$log2FoldChange > 1,]
+datatable(only_EC_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+## Sem Specific
+
+### Tumour Comparison {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Seminoma"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Seminoma/Germinoma" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "Other Tumours"
+Bint = as.integer(rownames(annot_table[(annot_table$malignantVs.normal == "Malignant" & annot_table$Row.names %in% testless_cells),]))
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+Sem_specific_DE = read_excel(path = deseq_out$excel)
+Sem_specific_DE_abs = read_excel(path = deseq_out$excel)
+datatable(Sem_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+### All Comparison {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Seminoma"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Seminoma/Germinoma" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "All others"
+Bint = rownames(annot_table)[annot_table$Row.names %in% testless_cells]
+Bint = as.integer(Bint)
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+#### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+#### Table {-}
+
+```{r}
+only_Sem_specific_intermed = deseq_out$deseq_intermediates
+only_Sem_specific_DE = read_excel(path = deseq_out$excel)
+only_Sem_specific_DE = only_Sem_specific_DE[only_Sem_specific_DE$log2FoldChange > 1,]
+datatable(only_Sem_specific_DE)
+```
+
+#### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+## EC v Sem Specific {.panelset}
+
+```{r cache=TRUE}
+grpA_label = "Embryonal carcinoma"
+Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Embryonal carcinoma" & annot_table$Row.names %in% testless_cells),]))
+
+grpB_label = "Seminoma"
+Bint = as.integer(rownames(annot_table[(annot_table$Hist_Type == "Seminoma/Germinoma" & annot_table$Row.names %in% testless_cells),]))
+Bint = Bint[!(Bint %in% Aint)]
+
+deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+pirna_i = deseq_out$counter
+```
+
+### Volcano {-}
+
+```{r}
+unserialize(deseq_out$volcano)
+```
+
+### Table {-}
+
+```{r}
+EC_specific_DE = read_excel(path = deseq_out$excel)
+datatable(EC_specific_DE)
+```
+
+### Comparisons {-}
+
+```{r}
+unserialize(deseq_out$comptable)
+```
+
+
+
+
+
+## Filter DE piRNAs
+
+
+```{r cache=TRUE}
+# YST_specific_DE = YST_specific_DE[(YST_specific_DE$padj < 0.05 & abs(YST_specific_DE$log2FoldChange) > 1),]
+# EC_specific_DE = EC_specific_DE[(EC_specific_DE$padj < 0.05 & abs(EC_specific_DE$log2FoldChange) > 1),]
+# Sem_specific_DE = Sem_specific_DE[(Sem_specific_DE$padj < 0.05 & abs(Sem_specific_DE$log2FoldChange) > 1),]
+
+Healthy_specific_DE = Tumour_specific_DE[(Tumour_specific_DE$padj < 0.05 & Tumour_specific_DE$log2FoldChange < 1),]
+Tumour_specific_DE = Tumour_specific_DE[(Tumour_specific_DE$padj < 0.05 & Tumour_specific_DE$log2FoldChange > 1),]
+YST_specific_DE = YST_specific_DE[(YST_specific_DE$padj < 0.05 & YST_specific_DE$log2FoldChange > 1),]
+EC_specific_DE = EC_specific_DE[(EC_specific_DE$padj < 0.05 & EC_specific_DE$log2FoldChange > 1),]
+Sem_specific_DE = Sem_specific_DE[(Sem_specific_DE$padj < 0.05 & Sem_specific_DE$log2FoldChange > 1),]
+
+# non_tumour_specific_piRNAs = Healthy_specific_DE$...1[abs(Healthy_specific_DE$log2FoldChange) < 1]
+subset_Healthy_specific_DE = Healthy_specific_DE[!(Healthy_specific_DE$...1 %in% c(YST_specific_DE$...1, EC_specific_DE$...1, Sem_specific_DE$...1)),]
+subset_Healthy_specific_DE = subset_Healthy_specific_DE[(subset_Healthy_specific_DE$padj < 0.05 & subset_Healthy_specific_DE$baseMean > 9),]
+subset_Healthy_specific_DE = subset_Healthy_specific_DE[order(subset_Healthy_specific_DE$log2FoldChange, decreasing=T),]
+
+subset_YST_specific_DE = YST_specific_DE[!(YST_specific_DE$...1 %in% c(EC_specific_DE$...1, Sem_specific_DE$...1)),]
+subset_YST_specific_DE = subset_YST_specific_DE[order(subset_YST_specific_DE$log2FoldChange, decreasing=T),]
+subset_YST_non_specific_DE = YST_specific_DE[YST_specific_DE$log2FoldChange < 1,]
+
+subset_EC_specific_DE = EC_specific_DE[!(EC_specific_DE$...1 %in% c(YST_specific_DE$...1, Sem_specific_DE$...1)),]
+subset_EC_specific_DE = subset_EC_specific_DE[order(subset_EC_specific_DE$log2FoldChange, decreasing=T),]
+
+subset_Sem_specific_DE = Sem_specific_DE[!(Sem_specific_DE$...1 %in% c(EC_specific_DE$...1, YST_specific_DE$...1)),]
+subset_Sem_specific_DE = subset_Sem_specific_DE[order(subset_Sem_specific_DE$log2FoldChange, decreasing=T),]
+```
+
+```{r cache=TRUE}
+# normalise values for original batch
+original_cells = testless_annot$Row.names[testless_annot$Row.names %in% testless_annot$Row.names[annot_table$batch == "original"]]
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = (pirna_counts[,colnames(pirna_counts) %in% original_cells]+1),
+										  colData = annot_table[annot_table$Row.names %in% original_cells,],
+										  design = ~ Hist_Type))
+
+# Normalise counts with variance stabilising transfromation
+vsd <- vst(deseq_matrix_raw, nsub=20)
+pirna_orig_norm_counts <- assay(vsd)
+rm(deseq_matrix_raw)
+rm(vsd)
+
+
+# same for new batch
+cells_to_use = testless_annot$Row.names
+cells_to_use = cells_to_use[cells_to_use %in% annot_table$Row.names[annot_table$batch == "new"]]
+
+deseq_matrix_raw = suppressMessages(DESeqDataSetFromMatrix(countData = (pirna_counts[,colnames(pirna_counts) %in% cells_to_use ]+1),
+										  colData = annot_table[annot_table$Row.names %in% cells_to_use,],
+										  design = ~ Hist_Type ))
+
+# Normalise counts with variance stabilising transfromation
+vsd <- vst(deseq_matrix_raw, nsub=500)
+pirna_norm_counts <- assay(vsd)
+rm(deseq_matrix_raw)
+rm(vsd)
+```
+
+
+
+
+## Subtype Markers {.panelset}
+
+### YST {-}
+
+```{r}
+heatmap_mat <- pirna_norm_counts[subset_YST_specific_DE$...1, cells_to_use]
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 9),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+rm(heatmap_mat)
+```
+
+### EC {-}
+
+```{r}
+heatmap_mat <- pirna_norm_counts[subset_EC_specific_DE$...1, cells_to_use]
+Heatmap(heatmap_mat,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 9),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+rm(heatmap_mat)
+```
+
+
+### Sem {-}
+
+```{r}
+heatmap_mat <- pirna_norm_counts[subset_Sem_specific_DE$...1[1:35], cells_to_use]
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 9),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+rm(heatmap_mat)
+```
+
+
+
+
+
+## Heatmaps of all Markers {.panelset}
+
+### Group Comparisons {-}
+
+```{r fig.height=13, fig.width=8}
+heatmap_mat <- pirna_norm_counts[c(subset_Sem_specific_DE$...1,subset_YST_specific_DE$...1, subset_EC_specific_DE$...1),  cells_to_use]
+
+
+pdf(paste0(output_folder, "Heatmap_all_marker_piRNAs.pdf"), width = 20, height = 20)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+```
+
+```{r}
+rm(heatmap_mat)
+```
+
+
+
+### Individual Comparisons {-}
+
+
+```{r include=FALSE, cache=TRUE}
+all_comp_DE = data.frame(
+                 histTypeA=character(),
+                 histTypeB=character(),
+                 Upregulated=character(),
+                 stringsAsFactors=FALSE)
+
+histTypesUnique = unique(annot_table$Hist_Type[annot_table$Row.names %in% cells_to_use])
+for (histTypeA in histTypesUnique) {
+  subannot_A = annot_table[(annot_table$Hist_Type == histTypeA) & (annot_table$Row.names %in% testless_cells),]
+  for (histTypeB in histTypesUnique[histTypesUnique != histTypeA]) {
+    subannot_B = annot_table[(annot_table$Hist_Type == histTypeB) & (annot_table$Row.names %in% testless_cells),]
+
+    grpA_label = gsub("/", ", ", histTypeA)
+    Aint = as.integer(rownames(annot_table[(annot_table$Hist_Type == histTypeA & annot_table$Row.names %in% testless_cells),]))
+
+    grpB_label = gsub("/", ", ", histTypeB)
+    Bint = as.integer(rownames(annot_table[(annot_table$Hist_Type == histTypeB & annot_table$Row.names %in% testless_cells),]))
+    Bint = Bint[!(Bint %in% Aint)]
+
+    print(paste("Running comparison between", grpA_label, "(", length(Aint), ")", "and", grpB_label, "(", length(Aint), ")"))
+    deseq_out = deseq2_plot("piRNA", grpA_label, Aint, grpB_label, Bint, pirna_i, annot_table, pirna_counts, subfolder = "piRNA DEA/GCT-Subtype Specifics")
+    pirna_i = deseq_out$counter
+
+    print(unserialize(deseq_out$volcano))
+    temp_comp_DE = read_excel(path = deseq_out$excel)
+    temp_comp_DE = temp_comp_DE[temp_comp_DE$log2FoldChange > 1,]
+    all_comp_DE = all_comp_DE %>%
+      add_row(histTypeA=histTypeA,histTypeB=histTypeB, Upregulated=temp_comp_DE$...1)
+  }
+}
+
+nrow(all_comp_DE)
+filtered_all_comp_DE = data.frame(
+                 histTypeA=character(),
+                 histTypeB=character(),
+                 Upregulated=character(),
+                 stringsAsFactors=FALSE)
+for (pi in unique(sort(all_comp_DE$Upregulated))) {
+  tmp_df = all_comp_DE[all_comp_DE$Upregulated == pi,]
+  if (length(unique(sort(tmp_df$histTypeA))) == 1) {
+    filtered_all_comp_DE = rbind(filtered_all_comp_DE, tmp_df)
+  }
+}
+rm(list = c("pi", "tmp_df"))
+nrow(filtered_all_comp_DE)
+head(filtered_all_comp_DE)
+```
+
+
+#### Individual Comparisons in New Data
+
+```{r fig.height=13, fig.width=8}
+heatmap_pirs =  c(subset_Sem_specific_DE$...1, subset_EC_specific_DE$...1)
+heatmap_pirs = heatmap_pirs[heatmap_pirs %in% filtered_all_comp_DE$Upregulated]
+heatmap_pirs = c(heatmap_pirs, subset_YST_specific_DE$...1[subset_YST_specific_DE$log2FoldChange > 1])
+heatmap_pirs = c(heatmap_pirs, subset_Healthy_specific_DE$...1[subset_Healthy_specific_DE$...1 %in% filtered_all_comp_DE$Upregulated])
+
+heatmap_mat <- pirna_norm_counts[heatmap_pirs,  cells_to_use]
+
+heatmap_annot = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),]
+
+# change order as requested
+# heatmap_annot_new_data_labels = c(heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Testis fibroblasts"],
+#                   heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Embryonal carcinoma"],
+#                   heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Gonadal control"],
+#                   heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Yolk sac tumour"],
+#                   heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Seminoma/Germinoma"])
+heatmap_annot_new_data_labels = c(
+  heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Seminoma/Germinoma"],
+  heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Yolk sac tumour"],
+  heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Embryonal carcinoma"],
+  heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Testis fibroblasts"],
+  heatmap_annot$Row.names[heatmap_annot$Hist_Type=="Gonadal control"]
+  )
+
+
+heatmap_annot_original_data_labels = c(testless_annot$Row.names[testless_annot$Hist_Type=="Embryonal carcinoma"],
+                  testless_annot$Row.names[testless_annot$Hist_Type=="Teratoma"],
+                  testless_annot$Row.names[testless_annot$Hist_Type=="Gonadal control"],
+                  testless_annot$Row.names[testless_annot$Hist_Type=="Yolk sac tumour"],
+                  testless_annot$Row.names[testless_annot$Hist_Type=="Seminoma/Germinoma"])
+
+# filter labels to only contain cell labels from original batch
+heatmap_annot_original_data_labels = heatmap_annot_original_data_labels[heatmap_annot_original_data_labels %in% original_cells]
+
+
+svg(filename = "Plots/piRNA DEA/Marker_piRNAs_new_data.svg", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+pdf(file = "Plots/piRNA DEA/Marker_piRNAs_new_data.pdf", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+```
+
+```{r}
+heatmap_top_annot = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("Row.names","Type", "Hist_Type") ]
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Row.names %in% colnames(heatmap_mat),c("Type", "Hist_Type") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+teratoma_less_cmplxhmapcols = cmplxhmapcols
+teratoma_less_cmplxhmapcols$Key = cmplxhmapcols$Key[c(1:3,5:6)]
+names(teratoma_less_cmplxhmapcols$Key) = names(cmplxhmapcols$Key)[c(1:3,5:6)]
+
+plt <- grid.grabExpr(draw(
+  Heatmap(heatmap_mat,
+    name = "expression",
+    column_order = heatmap_annot_new_data_labels,
+    column_labels = annot_table$Sample_Number_Table_1[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(
+      df = heatmap_top_annot,
+      col = teratoma_less_cmplxhmapcols,
+      annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+    ),
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  ),
+  annotation_legend_side = "bottom"
+))
+master_plot_list$fig4 <- plt
+grid.draw(plt)
+```
+
+
+```{r}
+rm(heatmap_mat)
+```
+
+
+#### Individual Comparisons in Original Data
+
+```{r fig.height=13, fig.width=8}
+heatmap_mat <- pirna_orig_norm_counts[heatmap_pirs,]
+
+svg(filename = "Plots/piRNA DEA/Marker_piRNAs_original_data.svg", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("batch","Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+pdf(file = "Plots/piRNA DEA/Marker_piRNAs_original_data.pdf", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("batch","Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("batch","Hist_Type") ], col = cmplxhmapcols)
+  )
+rm(heatmap_mat)
+```
+
+```{r}
+save.image("rds/pre-rfe-terminator.Rdata")
+```
+
+
+## EV Classifier
+
+### On all piRNAs
+
+```{r cache=TRUE}
+df <- pirna_norm_counts[, cells_to_use]
+df = as.data.frame(t(df))
+df$Row.names = rownames(df)
+df = merge(df, annot_table[,c("Row.names","Hist_Type", "EVs")], by = "Row.names")
+rownames(df) = df$Row.names
+df$Row.names = NULL
+df = df[!is.na(df$EVs),]
+df = df[df$EVs == "EV",]
+df$EVs = NULL
+
+df$Hist_Type = as.character(df$Hist_Type)
+df$Hist_Type[df$Hist_Type == "Seminoma/Germinoma"] = "Seminoma"
+df$Hist_Type = as.factor(df$Hist_Type)
+
+rds_file = "rds/rfe_fit_1_all_piRNAs.rds"
+if (file.exists(rds_file)) {
+	rfeFit = readRDS(rds_file)
+} else {
+	rfeFit = rfeTerminator(df, x_cols = colnames(df)[!(colnames(df) %in% "Hist_Type")], y_cols = c("Hist_Type"))
+	saveRDS(rfeFit, rds_file)
+}
+
+datatable(rfeFit$rfe_model_fit_results$results)
+heatmap_mat = pirna_norm_counts[colnames(rfeFit$rfe_reduced_features), cells_to_use]
+Heatmap(heatmap_mat ,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+```
+```{r}
+rm(heatmap_mat)
+```
+
+
+### On Markers (from 'other Tumour' comparisons)
+
+
+```{r cache=TRUE}
+df <- pirna_norm_counts[c(subset_Sem_specific_DE$...1, subset_YST_specific_DE$...1, subset_EC_specific_DE$...1), cells_to_use]
+df = as.data.frame(t(df))
+df$Row.names = rownames(df)
+df = merge(df, annot_table[,c("Row.names","Hist_Type", "EVs", "Sample_Number_Table_1")], by = "Row.names")
+rownames(df) = df$Row.names
+df$Row.names = NULL
+df = df[!is.na(df$EVs),]
+df = df[df$EVs == "EV",]
+df$EVs = NULL
+
+df$Hist_Type = as.character(df$Hist_Type)
+df$Hist_Type[df$Hist_Type == "Seminoma/Germinoma"] = "Seminoma"
+df$Hist_Type = as.factor(df$Hist_Type)
+
+rds_file = "rds/rfe_fit_2_other_tumour.rds"
+if (file.exists(rds_file)) {
+	rfeFit = readRDS(rds_file)
+} else {
+	rfeFit = rfeTerminator(df, x_cols = colnames(df)[!(colnames(df) %in% "Hist_Type")], y_cols = c("Hist_Type"))
+	saveRDS(rfeFit, rds_file)
+}
+
+
+datatable(rfeFit$rfe_model_fit_results$results)
+
+heatmap_mat = pirna_norm_counts[colnames(rfeFit$rfe_reduced_features), cells_to_use]
+
+svg(filename = "Plots/piRNA DEA/Subtype_Discriminating_piRNAs_other_tumour.svg", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+pdf(file = "Plots/piRNA DEA/Subtype_Discriminating_piRNAs_other_tumour.pdf", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+
+heatmap_top_annot = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("Row.names","Type", "Hist_Type") ]
+heatmap_top_annot = heatmap_top_annot[heatmap_top_annot$Row.names %in% colnames(heatmap_mat),c("Type", "Hist_Type") ] %>% rename(`Sample Type`=Type) %>% rename(Key=Hist_Type)
+
+plt <- grid.grabExpr(draw(
+  Heatmap(heatmap_mat,
+    name = "expression",
+    column_labels = annot_table$Sample_Number_Table_1[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(
+      df = heatmap_top_annot,
+      col = teratoma_less_cmplxhmapcols,
+      annotation_legend_param = list(legend_direction = "horizontal", legend_width = unit(5, "in"), nrow = 3)
+    ),
+    heatmap_legend_param = list(legend_direction = "vertical", legend_width = unit(5, "cm"))
+  ),
+  annotation_legend_side = "bottom"
+))
+master_plot_list$figS10 <- plt
+{
+  grid.newpage()
+  grid.draw(plt)
+}
+```
+
+
+The found piRNAs which can classify the subtype of GCT are `r colnames(rfeFit$rfe_reduced_features)`
+
+
+```{r cache=TRUE}
+df <- pirna_orig_norm_counts[colnames(rfeFit$rfe_reduced_features), ]
+df = as.data.frame(t(df))
+df$Row.names = rownames(df)
+df = merge(df, annot_table[,c("Row.names","Hist_Type", "batch")], by = "Row.names")
+rownames(df) = df$Row.names
+df$Row.names = NULL
+df = df[df$batch != "new",]
+df$batch = NULL
+
+dfrf = df
+# unique(sort(dfrf$Hist_Type))
+dfrf$Subtype[dfrf$Hist_Type == "Seminoma/Germinoma"] = "Sem"
+dfrf$Subtype[dfrf$Hist_Type != "Seminoma/Germinoma"] = "not.Sem"
+dfrf$Hist_Type = NULL
+dfrf$Subtype = as.factor(dfrf$Subtype)
+dfrf = dfrf[,c(colnames(rfeFit$rfe_reduced_features), "Subtype")]
+colnames(dfrf) = gsub("-", ".", colnames(dfrf)) # randomforest can't handle column names with illegal '-', so replace '-' with '.'
+# rf <- randomForest(Subtype ~ ., data=dfrf,ntree=1)
+# rf.roc<-roc(dfrf$Subtype, rf$votes[,2])
+# plot(rf.roc)
+# auc(rf.roc)
+```
+
+
+### On Markers (from 'all other' comparisons)
+
+#### Markers New Data
+
+```{r cache=TRUE}
+df <- pirna_norm_counts[c(only_Sem_specific_DE$...1,only_YST_specific_DE$...1, only_EC_specific_DE$...1), cells_to_use]
+df = as.data.frame(t(df))
+df$Row.names = rownames(df)
+df = merge(df, annot_table[,c("Row.names","Hist_Type", "EVs")], by = "Row.names")
+rownames(df) = df$Row.names
+df$Row.names = NULL
+df = df[!is.na(df$EVs),]
+df = df[df$EVs == "EV",]
+df$EVs = NULL
+
+df$Hist_Type = as.character(df$Hist_Type)
+df$Hist_Type[df$Hist_Type == "Seminoma/Germinoma"] = "Seminoma"
+df$Hist_Type = as.factor(df$Hist_Type)
+
+rds_file = "rds/rfe_fit_3_all_other.rds"
+if (file.exists(rds_file)) {
+	rfeFit = readRDS(rds_file)
+} else {
+	rfeFit = rfeTerminator(df, x_cols = colnames(df)[!(colnames(df) %in% "Hist_Type")], y_cols = c("Hist_Type"))
+	saveRDS(rfeFit, rds_file)
+}
+
+datatable(rfeFit$rfe_model_fit_results$results)
+heatmap_mat = pirna_norm_counts[colnames(rfeFit$rfe_reduced_features), cells_to_use]
+svg(filename = "Plots/piRNA DEA/Subtype_Discriminating_piRNAs_all_other_new.svg", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_new_data_labels,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("EVs", "Hist_Type") ], col = cmplxhmapcols)
+  )
+rm(heatmap_mat)
+```
+
+
+
+
+#### Markers Original Data
+
+```{r}
+heatmap_mat = pirna_orig_norm_counts[colnames(rfeFit$rfe_reduced_features), ]
+heatmap_mat = heatmap_mat[,heatmap_annot_original_data_labels]
+
+svg(filename = "Plots/piRNA DEA/Subtype_Discriminating_piRNAs_all_other_original.svg", width = 9, height = 6)
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_original_data_labels,
+    cluster_rows = FALSE,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("batch","Hist_Type") ], col = cmplxhmapcols)
+  )
+dev.off()
+Heatmap(heatmap_mat,
+    column_labels = annot_table$Hist_Type[annot_table$Row.names %in% colnames(heatmap_mat)],
+    column_order = heatmap_annot_original_data_labels,
+    cluster_rows = FALSE,
+    column_names_gp = gpar(fontsize = 10),
+    row_names_gp = gpar(fontsize = 7),
+    top_annotation = HeatmapAnnotation(df = annot_table[annot_table$Row.names %in% colnames(heatmap_mat),c("batch","Hist_Type") ], col = cmplxhmapcols)
+  )
+```
